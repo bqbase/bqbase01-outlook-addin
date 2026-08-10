@@ -182,14 +182,28 @@ async function dispatchTurn(text, isDraftCandidate) {
 
   if (result.ok) {
     history.push({ role: "assistant", content: result.text });
+    // Default: re-render the final text from the authoritative result, not
+    // the accumulated deltas -- same "trust the terminal result, not the
+    // streamed pieces" contract as V4's own claude_client/openrouter_client.
+    let displayText = result.text;
     if (isDraftCandidate) {
       lastDraft = result.text;
       document.getElementById("insertBtn").disabled = false;
+      // Swap the raw SUBJECT:/body/<<<END EMAIL>>> scaffolding for a
+      // human-readable rendering, same as V4's main_app.py
+      // _clean_up_draft_transcript -- confirmed live during testing that
+      // without this, a real draft showed the literal "SUBJECT: ..." and
+      // "<<<END EMAIL>>>" markers in the chat transcript even though the
+      // actual INSERT (insert.js, which already calls parseDraft itself)
+      // correctly stripped them from the compose body. A no-op if the
+      // model's reply didn't use the contract (parseDraft then returns the
+      // text unchanged), same as V4's own version.
+      const { proposedSubject, body } = parseDraft(result.text);
+      if (proposedSubject !== null || body !== result.text) {
+        displayText = proposedSubject ? "Subject: " + proposedSubject + "\n\n" + body : body;
+      }
     }
-    // Re-render the final text from the authoritative result, not the
-    // accumulated deltas -- same "trust the terminal result, not the
-    // streamed pieces" contract as V4's own claude_client/openrouter_client.
-    assistantDiv.textContent = "Claude:\n" + result.text;
+    assistantDiv.textContent = "Claude:\n" + displayText;
   } else {
     // Roll back the just-pushed user turn on failure, same as
     // main_app.py's _handle_claude_result -- a retry shouldn't desync

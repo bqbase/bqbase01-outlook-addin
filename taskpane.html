@@ -19,11 +19,14 @@
   <div id="screen-chat" class="hidden">
     <div id="status-line"></div>
     <div id="transcript"></div>
-    <textarea id="input-box" placeholder="Ask for a draft, ask a question about this email..."></textarea>
-    <div class="hint">Enter to send &middot; Shift+Enter for a new line</div>
+    <textarea id="input-box" placeholder="Ask for a draft, ask a question about this email... (or drop a file here)"></textarea>
+    <div id="chips-row" class="chips-row"></div>
+    <div class="hint">Enter to send &middot; Shift+Enter for a new line &middot; drag a file onto the box above to attach it</div>
     <div class="action-row">
       <button id="sendBtn" class="primary" type="button">Send</button>
       <button id="insertBtn" class="secondary" type="button" disabled>Insert into email</button>
+      <button id="browseBtn" class="secondary" type="button">Browse for file</button>
+      <input id="fileInput" type="file" multiple class="hidden" />
     </div>
   </div>
 
@@ -80,6 +83,7 @@
   <script src="providers.js"></script>
   <script src="settings.js"></script>
   <script src="mail-context.js"></script>
+  <script src="attachments.js"></script>
   <script src="insert.js"></script>
   <script src="taskpane.js"></script>
 </body>

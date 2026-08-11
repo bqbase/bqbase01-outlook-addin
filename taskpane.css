@@ -54,11 +54,20 @@ body {
   border: 1px solid #ccc;
   border-radius: 4px;
   height: 320px;
+  min-height: 120px;
+  max-height: 80vh;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 8px;
   margin-bottom: 8px;
   white-space: pre-wrap;
   word-break: break-word;
+  resize: vertical;
+}
+
+#transcript.drop-target-active {
+  border-color: #0066cc;
+  background: #eef5ff;
 }
 
 .turn {
@@ -79,6 +88,48 @@ body {
   font-family: inherit;
   font-size: 13px;
   resize: vertical;
+}
+
+#input-box.drop-target-active {
+  border-color: #0066cc;
+  background: #eef5ff;
+}
+
+.chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.chips-row:empty {
+  margin-top: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #ccc;
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 11px;
+  background: #f5f5f5;
+}
+
+.chip.chip-error {
+  border-color: #c0362c;
+  color: #c0362c;
+  background: #fdecea;
+}
+
+.chip button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  color: inherit;
 }
 
 .hint {

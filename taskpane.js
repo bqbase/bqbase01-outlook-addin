@@ -18,6 +18,7 @@ let history = []; // [{role, content}], mirrors main_app.py's self.history
 let lastDraft = null; // mirrors main_app.py's self.last_draft
 let busy = false;
 let settings = null;
+let pendingAttachments = []; // Attachment[] from attachments.js, mirrors main_app.py's self.pending_attachments
 
 Office.onReady((info) => {
   if (info.host !== Office.HostType.Outlook) return;
@@ -43,6 +44,19 @@ Office.onReady((info) => {
       onSend();
     }
   });
+  document.getElementById("browseBtn").addEventListener("click", () => {
+    document.getElementById("fileInput").click();
+  });
+  document.getElementById("fileInput").addEventListener("change", async (e) => {
+    await addFiles(e.target.files);
+    e.target.value = ""; // allow re-selecting the same file later
+  });
+  _wireDropTarget(document.getElementById("input-box"));
+  // The transcript is ALSO a drop target, not just the input box -- a user
+  // dragging a file toward the input box has a decent chance of releasing
+  // it slightly high, over the transcript instead. Both route to the same
+  // addFiles handler, matching how forgiving a real drop zone should be.
+  _wireDropTarget(document.getElementById("transcript"));
 
   if (hasValidSettings(settings)) {
     showChatScreen();
@@ -134,22 +148,92 @@ function setBusy(isBusy) {
   document.getElementById("input-box").disabled = isBusy;
 }
 
+// -- attachments -------------------------------------------------------
+
+function _wireDropTarget(el) {
+  // dragover must call preventDefault(), or the browser's default
+  // "not-a-drop-target" behavior wins and drop never fires -- standard
+  // HTML5 Drag and Drop API requirement, not optional.
+  el.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    el.classList.add("drop-target-active");
+  });
+  el.addEventListener("dragleave", () => {
+    el.classList.remove("drop-target-active");
+  });
+  el.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    el.classList.remove("drop-target-active");
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      await addFiles(e.dataTransfer.files);
+    }
+  });
+}
+
+async function addFiles(fileList) {
+  if (busy) return; // mirrors main_app.py's busy guard on attach -- no dedicated message, matches its own silent no-op
+  const room = MAX_ATTACHMENTS_PER_MESSAGE - pendingAttachments.length;
+  if (room <= 0) return;
+  const processed = await processFiles(Array.from(fileList).slice(0, room));
+  pendingAttachments = pendingAttachments.concat(processed);
+  renderAttachmentChips();
+}
+
+function removeAttachment(index) {
+  if (busy) return;
+  pendingAttachments.splice(index, 1);
+  renderAttachmentChips();
+}
+
+function renderAttachmentChips() {
+  const row = document.getElementById("chips-row");
+  row.innerHTML = "";
+  pendingAttachments.forEach((att, index) => {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (att.error ? " chip-error" : "");
+    chip.title = att.error || att.filename;
+    const label = document.createElement("span");
+    label.textContent = att.filename;
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.textContent = "×"; // ×
+    removeBtn.addEventListener("click", () => removeAttachment(index));
+    chip.appendChild(label);
+    chip.appendChild(removeBtn);
+    row.appendChild(chip);
+  });
+}
+
 async function onSend() {
   if (busy) return;
   const inputBox = document.getElementById("input-box");
   const text = inputBox.value.trim();
-  if (!text) return;
+  // A message with no typed text but pending attachments is valid, same as
+  // V4's main_app.py -- e.g. drop a PDF and hit Send with nothing typed.
+  if (!text && pendingAttachments.length === 0) return;
+
+  let display = "You: " + (text || "(no message)");
+  const okAttachments = pendingAttachments.filter((a) => !a.error);
+  if (okAttachments.length) {
+    display += "\n[Attached: " + okAttachments.map((a) => a.filename).join(", ") + "]";
+  }
+  appendTurn(display, "user");
+
   inputBox.value = "";
-  appendTurn("You: " + text, "user");
-  await dispatchTurn(text, true);
+  const sentAttachments = pendingAttachments;
+  pendingAttachments = [];
+  renderAttachmentChips();
+  await dispatchTurn(text, true, sentAttachments);
 }
 
 // Fires once on a reply/forward, mirroring main_app.py's
 // _suggest_reply_options -- a synthetic first turn, not shown as "You: ...".
-// Attachment auto-review (V4's find_original_message/attach_from_mail_item)
-// is NOT ported here yet -- see mail-context.js's header for why; this only
-// carries forward the "suggest reply angles automatically" behavior, over
-// plain text context.
+// Attachment auto-review (V4's find_original_message/attach_from_mail_item,
+// i.e. auto-pulling the ORIGINAL message's own attachments) is NOT ported
+// here yet -- see mail-context.js's header for why; this only carries
+// forward the "suggest reply angles automatically" behavior, over plain
+// text context. Manually drag-and-dropped files (this file's own
+// addFiles/attachments.js) are a separate, now-supported feature.
 async function maybeAutoSuggestReplyOptions() {
   if (!isReplyOrForward(currentItem)) return;
   appendTurn("[system] Reviewing the email -- suggesting reply options...", "system");
@@ -161,8 +245,9 @@ async function maybeAutoSuggestReplyOptions() {
   );
 }
 
-async function dispatchTurn(text, isDraftCandidate) {
-  history.push({ role: "user", content: text });
+async function dispatchTurn(text, isDraftCandidate, attachments) {
+  const content = attachments && attachments.length ? buildMessageContent(text, attachments) : text;
+  history.push({ role: "user", content: content });
   setBusy(true);
 
   const systemPrompt = await buildSystemPrompt(currentItem);

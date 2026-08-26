@@ -5,18 +5,18 @@
 
  Streams a chat turn: zero or more text deltas via the onDelta callback,
  then exactly one terminal result. OpenRouter with openai/gpt-5.6-luna is
- the only provider and the only model -- the key, model and reasoning effort
- are all baked in below, not user-configurable.
+ the only provider and the only model, and neither is user-configurable.
 
  An earlier revision supported OpenAI and Anthropic as well, with each user
  supplying their own key via a Settings screen. That was removed on request
- (2026-08-25): one provider, one model, one key, no settings.
+ (2026-08-25): one provider, one model, no settings.
 
- SECURITY, stated plainly rather than buried: OPENROUTER_API_KEY below is a
- real, live key shipped inside a task pane served from a PUBLIC GitHub Pages
- site. Anyone who views the page source can read it and spend against this
- account. This was an explicit, informed decision by the project owner, not
- an oversight -- rotate the key at openrouter.ai if it is ever abused.
+ NO API KEY IS IN THIS FILE, deliberately. A task pane is just a web page,
+ so any key it held would be readable by anyone viewing the source. Requests
+ instead go to a Cloudflare Worker (source in ../worker) which holds the key
+ as an encrypted secret and adds the Authorization header server-side. The
+ Worker also restricts calling origins and the model, so the endpoint being
+ public does not mean it can be used for arbitrary spend.
 
  sendTurnStreaming(systemPrompt, history, onDelta) -> Promise<{ok, text,
  error, refusalCategory}>
@@ -32,10 +32,9 @@
 ============================================================================
 */
 
-// Baked-in OpenRouter credentials and call settings.
-const OPENROUTER_API_KEY =
-  "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";
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+// The proxy endpoint. NO API KEY LIVES HERE -- see this file's header.
+// Deployed from ../worker; change this if the Worker is renamed.
+const PROXY_URL = "https://bqbase-openrouter-proxy.bqbase.workers.dev";
 const OPENROUTER_MODEL = "openai/gpt-5.6-luna";
 const OPENROUTER_EFFORT = "medium";
 
@@ -43,11 +42,10 @@ async function sendTurnStreaming(systemPrompt, history, onDelta) {
   const messages = [{ role: "system", content: systemPrompt }].concat(history);
   let response;
   try {
-    response = await fetch(OPENROUTER_URL, {
+    response = await fetch(PROXY_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer " + OPENROUTER_API_KEY,
       },
       body: JSON.stringify({
         model: OPENROUTER_MODEL,
@@ -57,13 +55,16 @@ async function sendTurnStreaming(systemPrompt, history, onDelta) {
       }),
     });
   } catch (err) {
-    return { ok: false, error: "Network error contacting openrouter.ai: " + err };
+    return { ok: false, error: "Network error contacting the proxy: " + err };
   }
 
   if (!response.ok) {
     const bodyText = await _safeReadText(response);
     if (response.status === 401) {
-      return { ok: false, error: "OpenRouter rejected the built-in API key (401)." };
+      return { ok: false, error: "The proxy's API key was rejected (401)." };
+    }
+    if (response.status === 403) {
+      return { ok: false, error: "The proxy refused this request (403). Check its allowed origins and model." };
     }
     if (response.status === 429) {
       return { ok: false, error: "Rate limited (429). Wait a moment and try again." };

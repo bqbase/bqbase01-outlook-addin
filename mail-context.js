@@ -3,20 +3,17 @@
  mail-context.js -- mail context extraction for the task pane
 ============================================================================
 
- Mirrors V4's mail_context.py: without this, the add-in is a generic chatbot
- sitting next to an email it cannot see. Adapted for Office.js's async,
- promise-free callback API and the read/compose API-shape differences
- discovered live while building the feasibility prototype (see STATE.md):
+ Reads the current email so the add-in isn't a generic chatbot sitting next
+ to a message it cannot see. Written for Office.js's async, callback-based
+ API and its read/compose API-shape difference, found live during testing:
  item.subject is a plain string in READ mode but a Subject object requiring
  .getAsync() in COMPOSE mode; item.body always requires .getAsync() in both
  modes.
 
- Attachments (V4's attach_from_mail_item/find_original_message feature) are
- NOT ported in this first pass -- Office.js's attachment content APIs are
- more restricted than COM's (getAttachmentContentAsync exists but reading an
- arbitrary original message's attachments the way V4 does via COM has no
- direct Office.js equivalent; would need its own design pass). Tracked as a
- known gap in STATE.md, not silently dropped.
+ Auto-reading the ORIGINAL message's own attachments is NOT implemented.
+ getAttachmentContentAsync exists, but pulling attachments off an arbitrary
+ original message needs its own design pass. Tracked as a known gap in
+ STATE.md, not silently dropped.
 ============================================================================
 */
 
@@ -71,13 +68,11 @@ function getBodyText(item) {
   });
 }
 
-// Office.js's compose item has no direct equivalent of COM's
-// ConversationIndex-length check V4 uses (mail_context.is_reply_or_forward).
-// The closest documented signal is Office.context.mailbox.item.conversationId
-// being non-null: a reply/forward inherits the original thread's ID
-// immediately, per Microsoft's own docs. Known, accepted imprecision (same
-// "degrades to a slightly-off prompt, not a crash" category as V4's own
-// COM-check trade-off): the SAME docs also say a brand-new (non-reply)
+// The closest documented reply/forward signal Office.js offers is
+// Office.context.mailbox.item.conversationId being non-null: a
+// reply/forward inherits the original thread's ID immediately, per
+// Microsoft's own docs. Known, accepted imprecision -- it degrades to a
+// slightly-off prompt, not a crash: the SAME docs also say a brand-new
 // compose item gets a NON-null conversationId too, once the user has typed a
 // subject AND the item has been saved as a draft -- so a saved blank
 // "Untitled" compose that later gets a subject could false-positive as a
@@ -108,8 +103,7 @@ async function buildSystemPrompt(item) {
     return BASE_SYSTEM_PROMPT + "\n\n" + context;
   } catch (err) {
     // A read failure must not crash the add-in -- fall back to a
-    // context-free prompt and keep going, same as mail_context.py's
-    // build_system_prompt.
+    // context-free prompt and keep going.
     return BASE_SYSTEM_PROMPT;
   }
 }
@@ -125,10 +119,8 @@ async function describeContext(item) {
   }
 }
 
-// Matches word_insert.py's SUBJECT:/body/<<<END EMAIL>>> contract -- kept in
-// sync deliberately (same marker strings) so a draft this add-in produces
-// parses identically to how V4's own INSERT logic parses it, in case the
-// two are ever compared or a user works across both.
+// The SUBJECT:/body/<<<END EMAIL>>> contract the model is asked to follow
+// when drafting. insert.js parses the same markers via parseDraft.
 const DRAFT_PATTERN = /^SUBJECT:\s*(.*?)\s*\r?\n\r?\n([\s\S]*?)(?:\r?\n<<<END EMAIL>>>|$)/i;
 const NO_CHANGE_SUBJECTS = new Set(["", "(no change)", "no change"]);
 

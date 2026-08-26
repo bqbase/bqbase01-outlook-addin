@@ -17,8 +17,6 @@
   <AppDomains>
     <AppDomain>https://bqbase.github.io</AppDomain>
     <AppDomain>https://openrouter.ai</AppDomain>
-    <AppDomain>https://api.openai.com</AppDomain>
-    <AppDomain>https://api.anthropic.com</AppDomain>
   </AppDomains>
   <Hosts>
     <Host Name="Mailbox" />

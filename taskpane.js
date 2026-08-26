@@ -5,19 +5,16 @@
 
  Wires together mail-context.js (read the email), providers.js (the streaming
  OpenRouter call), and insert.js (write the draft back) into the actual chat
- UI. Mirrors main_app.py's AssistantWindow
- at the level of what it does (history list, streaming deltas rendered live,
- INSERT enabled only after a successful draft, auto-suggest on reply open) --
- not a line-for-line port, since Tkinter's widget model and a browser DOM
- have nothing in common mechanically.
+ UI: a history list, streaming deltas rendered live, INSERT enabled only
+ after a successful draft, and auto-suggest when a reply is opened.
 ============================================================================
 */
 
 let currentItem = null;
-let history = []; // [{role, content}], mirrors main_app.py's self.history
-let lastDraft = null; // mirrors main_app.py's self.last_draft
+let history = []; // [{role, content}]
+let lastDraft = null; // last successful draft, enables INSERT
 let busy = false;
-let pendingAttachments = []; // Attachment[] from attachments.js, mirrors main_app.py's self.pending_attachments
+let pendingAttachments = []; // Attachment[] from attachments.js
 
 Office.onReady((info) => {
   if (info.host !== Office.HostType.Outlook) return;
@@ -105,7 +102,7 @@ function _wireDropTarget(el) {
 }
 
 async function addFiles(fileList) {
-  if (busy) return; // mirrors main_app.py's busy guard on attach -- no dedicated message, matches its own silent no-op
+  if (busy) return; // busy guard on attach -- deliberately a silent no-op
   const room = MAX_ATTACHMENTS_PER_MESSAGE - pendingAttachments.length;
   if (room <= 0) return;
   const processed = await processFiles(Array.from(fileList).slice(0, room));
@@ -142,8 +139,8 @@ async function onSend() {
   if (busy) return;
   const inputBox = document.getElementById("input-box");
   const text = inputBox.value.trim();
-  // A message with no typed text but pending attachments is valid, same as
-  // V4's main_app.py -- e.g. drop a PDF and hit Send with nothing typed.
+  // A message with no typed text but pending attachments is valid --
+  // e.g. drop a PDF and hit Send with nothing typed.
   if (!text && pendingAttachments.length === 0) return;
 
   let display = "You: " + (text || "(no message)");
@@ -160,14 +157,11 @@ async function onSend() {
   await dispatchTurn(text, true, sentAttachments);
 }
 
-// Fires once on a reply/forward, mirroring main_app.py's
-// _suggest_reply_options -- a synthetic first turn, not shown as "You: ...".
-// Attachment auto-review (V4's find_original_message/attach_from_mail_item,
-// i.e. auto-pulling the ORIGINAL message's own attachments) is NOT ported
-// here yet -- see mail-context.js's header for why; this only carries
-// forward the "suggest reply angles automatically" behavior, over plain
-// text context. Manually drag-and-dropped files (this file's own
-// addFiles/attachments.js) are a separate, now-supported feature.
+// Fires once on a reply/forward: a synthetic first turn, not shown as
+// "You: ...". Auto-reading the ORIGINAL message's own attachments is not
+// implemented -- see mail-context.js's header. This suggests reply angles
+// from plain text context only. Manually drag-and-dropped files (this
+// file's own addFiles/attachments.js) are a separate, supported feature.
 async function maybeAutoSuggestReplyOptions() {
   if (!isReplyOrForward(currentItem)) return;
   appendTurn("[system] Reviewing the email -- suggesting reply options...", "system");
@@ -201,22 +195,21 @@ async function dispatchTurn(text, isDraftCandidate, attachments) {
 
   if (result.ok) {
     history.push({ role: "assistant", content: result.text });
-    // Default: re-render the final text from the authoritative result, not
-    // the accumulated deltas -- same "trust the terminal result, not the
-    // streamed pieces" contract as V4's own claude_client/openrouter_client.
+    // Default: re-render the final text from the authoritative result,
+    // not the accumulated deltas -- providers.js's contract is that the
+    // terminal result is authoritative, not the streamed pieces.
     let displayText = result.text;
     if (isDraftCandidate) {
       lastDraft = result.text;
       document.getElementById("insertBtn").disabled = false;
       // Swap the raw SUBJECT:/body/<<<END EMAIL>>> scaffolding for a
-      // human-readable rendering, same as V4's main_app.py
-      // _clean_up_draft_transcript -- confirmed live during testing that
+      // human-readable rendering. Confirmed live during testing that
       // without this, a real draft showed the literal "SUBJECT: ..." and
       // "<<<END EMAIL>>>" markers in the chat transcript even though the
       // actual INSERT (insert.js, which already calls parseDraft itself)
       // correctly stripped them from the compose body. A no-op if the
-      // model's reply didn't use the contract (parseDraft then returns the
-      // text unchanged), same as V4's own version.
+      // model's reply didn't use the contract -- parseDraft then returns
+      // the text unchanged.
       const { proposedSubject, body } = parseDraft(result.text);
       if (proposedSubject !== null || body !== result.text) {
         displayText = proposedSubject ? "Subject: " + proposedSubject + "\n\n" + body : body;
@@ -224,9 +217,8 @@ async function dispatchTurn(text, isDraftCandidate, attachments) {
     }
     assistantDiv.textContent = "Claude:\n" + displayText;
   } else {
-    // Roll back the just-pushed user turn on failure, same as
-    // main_app.py's _handle_claude_result -- a retry shouldn't desync
-    // history with a dangling unanswered user turn.
+    // Roll back the just-pushed user turn on failure -- a retry
+    // shouldn't desync history with a dangling unanswered user turn.
     history.pop();
     assistantDiv.remove();
     const message = result.refusalCategory

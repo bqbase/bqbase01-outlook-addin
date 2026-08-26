@@ -3,13 +3,11 @@
  attachments.js -- drag-and-drop file attachments for the chat input
 ============================================================================
 
- Mirrors V4's attachments.py in spirit (classify a file, build a
- provider-appropriate content block or extracted text, cap size/count) --
- NOT a full port. DOCX/XLSX parsing (V4 uses python-docx/openpyxl) has no
- lightweight browser equivalent without pulling in a real parsing library,
- so this first pass supports images, PDF, and plain text only. Unsupported
- types get a clear per-file error, same as V4's own "Unsupported file type"
- path -- never silently dropped.
+ Classifies a dropped file, builds the matching content block or extracted
+ text, and caps size/count. DOCX/XLSX parsing has no lightweight browser
+ equivalent without pulling in a real parsing library, so this supports
+ images, PDF, and plain text only. Unsupported types get a clear per-file
+ error -- never silently dropped.
 
  Uses the plain HTML5 Drag and Drop API, NOT Office.js's DragAndDropEvent --
  confirmed via Microsoft's own drag-drop-items.md doc: dropping an OS
@@ -31,9 +29,9 @@ const PDF_EXTENSIONS = new Set([".pdf"]);
 const TEXT_EXTENSIONS = new Set([".txt"]);
 const UNSUPPORTED_BUT_KNOWN = new Set([".docx", ".xlsx", ".msg"]); // clear error, not silent drop
 
-const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // matches V4's own cap
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // 20MB per file
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
-const MAX_EXTRACTED_TEXT_CHARS = 200000; // matches V4's own truncation ceiling
+const MAX_EXTRACTED_TEXT_CHARS = 200000; // truncation ceiling
 
 function classifyFile(filename) {
   const ext = _extOf(filename);
@@ -51,8 +49,7 @@ function _extOf(filename) {
 
 // processFiles(fileList) -> Promise<Attachment[]>
 // Attachment: {filename, category, contentBlock, extractedText, error}
-// -- exactly one of contentBlock/extractedText/error is set, mirroring
-// V4's own Attachment dataclass contract.
+// -- exactly one of contentBlock/extractedText/error is set.
 async function processFiles(fileList) {
   const files = Array.from(fileList).slice(0, MAX_ATTACHMENTS_PER_MESSAGE);
   const results = [];
@@ -74,7 +71,7 @@ async function _processOneFile(file) {
   if (category === "unsupported-known") {
     return {
       filename: file.name, category,
-      error: "DOCX/XLSX/.msg attachments aren't supported yet in this add-in (V4's desktop app supports them; this is a known, tracked gap -- see STATE.md).",
+      error: "DOCX/XLSX/.msg attachments aren't supported yet in this add-in (known, tracked gap -- see STATE.md).",
     };
   }
   if (file.size > MAX_ATTACHMENT_BYTES) {
@@ -124,11 +121,10 @@ function _readAsText(file) {
 }
 
 // buildMessageContent(userText, attachments) -> string | array
-// Same "plain string when nothing attached, else a content-block array"
-// contract as V4's attachments.build_message_content -- text-extracted
-// content first, then native image/file blocks, then the user's own text
-// last (same ordering rationale: supporting material before the
-// instruction that references it).
+// Returns a plain string when nothing is attached, else a content-block
+// array: text-extracted content first, then native image/file blocks, then
+// the user's own text last -- supporting material before the instruction
+// that references it.
 function buildMessageContent(userText, attachments) {
   const ok = (attachments || []).filter((a) => !a.error);
   if (ok.length === 0) return userText;

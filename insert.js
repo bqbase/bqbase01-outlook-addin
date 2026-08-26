@@ -3,30 +3,19 @@
  insert.js -- inserting a drafted reply into the compose body
 ============================================================================
 
- V4's word_insert.py wraps the draft in a Word bookmark so re-inserting a
- revision REPLACES the previous draft instead of duplicating it, and so the
- quoted original thread below it is never touched. Office.js has no
- bookmark/range-identity concept for a task pane to hold onto across calls,
- so this cannot be a direct port -- see the design note below for what this
- does instead and why.
-
- CRITICAL LESSON CARRIED FORWARD FROM V4, NOT REDISCOVERED HERE THE HARD WAY:
- V4's own STATE.md records a real production incident where INSERT once
- deleted a user's entire quoted thread because it trusted the wrong
- mechanism. The equivalent trap in Office.js is body.setAsync, which
- REPLACES THE ENTIRE BODY (confirmed via Microsoft's own docs: "the entire
- body of the conversation thread is replaced" unless bodyMode: HostConfig is
- used, and even then a whole reply's body, not just an insertion point) --
- using it here would blow away the quoted original exactly like that V4
- incident. This module deliberately uses setSelectedDataAsync (insert AT THE
- CURSOR, replacing only a text SELECTION if one exists) instead, never
+ DO NOT USE body.setAsync HERE. It REPLACES THE ENTIRE BODY (per Microsoft's
+ own docs: "the entire body of the conversation thread is replaced" unless
+ bodyMode: HostConfig is used, and even then a whole reply's body, not just
+ an insertion point) -- on a reply that silently destroys the user's quoted
+ original thread. This module uses setSelectedDataAsync instead: insert AT
+ THE CURSOR, replacing only a text SELECTION if one exists. Never
  setAsync/prependAsync's whole-body semantics.
 
- Known limitation, accepted rather than solved (parallel to V4's own accepted
- bookmark-start-boundary quirk): without a bookmark-equivalent, clicking
- Insert twice inserts the draft twice, at wherever the cursor happens to be
- each time -- there is no "replace my own previous insertion" behavior here.
- Documented in the UI (see taskpane.js), not silently different from V4.
+ Known limitation, accepted rather than solved: Office.js gives a task pane
+ no bookmark or range identity to hold onto across calls, so clicking Insert
+ twice inserts the draft twice, at wherever the cursor happens to be each
+ time -- there is no "replace my own previous insertion" behavior here.
+ Documented in the UI (see taskpane.js).
 ============================================================================
 */
 
@@ -40,8 +29,7 @@ async function insertDraft(item, rawDraftText) {
     const subjectResult = await _setSubject(item, proposedSubject);
     if (!subjectResult.ok) {
       // Non-fatal -- still attempt the body insert even if the subject
-      // update failed, same "partial success beats total failure" spirit as
-      // V4's own error handling throughout main_app.py.
+      // update failed: partial success beats total failure.
       // eslint-disable-next-line no-console
       console.warn("insertDraft: subject update failed: " + subjectResult.message);
     }

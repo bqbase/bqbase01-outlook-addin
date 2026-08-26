@@ -6,14 +6,18 @@ HTTPS URL — `localhost` URLs are rejected by Office Add-in manifest validation
 for icons, and don't survive outside this one dev machine anyway.
 
 This is a client-only Office Add-in: it reads the current email via Office.js,
-lets the user chat with an LLM they've configured with their OWN API key
-(OpenRouter, OpenAI, or Anthropic — chosen and entered by the user in the
-add-in's own Settings screen), and can insert a drafted reply into the compose
-body. No backend server — each user's key is stored via Office.js's
-`RoamingSettings` (their own Microsoft account's roaming add-in settings) and
-sent directly from their own browser/Outlook client straight to their chosen
-provider's API. Nothing passes through any server this project operates.
+lets the user chat with an LLM about it, and can insert a drafted reply into
+the compose body. No backend server — requests go from the user's own
+browser/Outlook client straight to OpenRouter. Nothing passes through any
+server this project operates.
 
-See `D:\TerraSync\AI\Project\Email_Assisant_V5\STATE.md` for full project
+The provider, model and API key are fixed in `providers.js` (OpenRouter,
+`openai/gpt-5.6-luna`); there is no Settings screen and nothing for the user
+to configure. **The API key is therefore visible in the source of this
+publicly hosted page** — a deliberate choice by the project owner, superseding
+the earlier bring-your-own-key design. Rotate the key at openrouter.ai if it
+is ever abused.
+
+See `D:\TerraSync\Claude\Project\Email_Assistant_V5\STATE.md` for full project
 history/decisions — this repo holds only what must be publicly hosted, not the
 project's working notes.

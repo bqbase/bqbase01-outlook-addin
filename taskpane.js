@@ -3,9 +3,9 @@
  taskpane.js -- main orchestrator
 ============================================================================
 
- Wires together mail-context.js (read the email), settings.js (per-user
- provider/key), providers.js (the streaming API call), and insert.js (write
- the draft back) into the actual chat UI. Mirrors main_app.py's AssistantWindow
+ Wires together mail-context.js (read the email), providers.js (the streaming
+ OpenRouter call), and insert.js (write the draft back) into the actual chat
+ UI. Mirrors main_app.py's AssistantWindow
  at the level of what it does (history list, streaming deltas rendered live,
  INSERT enabled only after a successful draft, auto-suggest on reply open) --
  not a line-for-line port, since Tkinter's widget model and a browser DOM
@@ -17,25 +17,14 @@ let currentItem = null;
 let history = []; // [{role, content}], mirrors main_app.py's self.history
 let lastDraft = null; // mirrors main_app.py's self.last_draft
 let busy = false;
-let settings = null;
 let pendingAttachments = []; // Attachment[] from attachments.js, mirrors main_app.py's self.pending_attachments
 
 Office.onReady((info) => {
   if (info.host !== Office.HostType.Outlook) return;
   currentItem = Office.context.mailbox.item;
-  settings = loadSettings();
 
   document.getElementById("screen-loading").classList.add("hidden");
 
-  document.getElementById("settingsBtn").addEventListener("click", showSettingsScreen);
-  document.getElementById("cancelSettingsBtn").addEventListener("click", () => {
-    if (hasValidSettings(settings)) showChatScreen();
-    // If settings were never configured, Cancel has nowhere useful to go
-    // back to -- stay on the Settings screen rather than show a broken chat
-    // screen with no key.
-  });
-  document.getElementById("saveSettingsBtn").addEventListener("click", onSaveSettings);
-  document.getElementById("providerSelect").addEventListener("change", onProviderChange);
   document.getElementById("sendBtn").addEventListener("click", onSend);
   document.getElementById("insertBtn").addEventListener("click", onInsert);
   document.getElementById("input-box").addEventListener("keydown", (e) => {
@@ -58,70 +47,15 @@ Office.onReady((info) => {
   // addFiles handler, matching how forgiving a real drop zone should be.
   _wireDropTarget(document.getElementById("transcript"));
 
-  if (hasValidSettings(settings)) {
-    showChatScreen();
-    maybeAutoSuggestReplyOptions();
-  } else {
-    // First-ever launch: no key configured yet -- go straight to Settings
-    // rather than show a chat screen that can only ever error. Novice-
-    // friendly per the user's explicit ask, not an afterthought.
-    showSettingsScreen();
-  }
+  showChatScreen();
+  maybeAutoSuggestReplyOptions();
 });
 
 // -- screen management --------------------------------------------------
 
 function showChatScreen() {
-  document.getElementById("screen-settings").classList.add("hidden");
   document.getElementById("screen-chat").classList.remove("hidden");
   updateStatusLine();
-}
-
-function showSettingsScreen() {
-  document.getElementById("providerSelect").value = settings.provider;
-  document.getElementById("apiKeyInput").value = settings.apiKey;
-  document.getElementById("modelInput").value = settings.model;
-  document.getElementById("effortSelect").value = settings.effort;
-  document.getElementById("settings-error").textContent = "";
-  onProviderChange();
-  document.getElementById("screen-chat").classList.add("hidden");
-  document.getElementById("screen-settings").classList.remove("hidden");
-}
-
-function onProviderChange() {
-  const provider = document.getElementById("providerSelect").value;
-  const modelInput = document.getElementById("modelInput");
-  const modelNote = document.getElementById("modelNote");
-  const effortField = document.getElementById("effortField");
-  if (!modelInput.value) {
-    modelInput.value = PROVIDERS[provider].defaultModel;
-  }
-  modelNote.textContent = "Suggested default: " + PROVIDERS[provider].defaultModel;
-  effortField.style.display = PROVIDERS[provider].supportsEffort ? "" : "none";
-}
-
-async function onSaveSettings() {
-  const newSettings = {
-    provider: document.getElementById("providerSelect").value,
-    apiKey: document.getElementById("apiKeyInput").value.trim(),
-    model: document.getElementById("modelInput").value.trim(),
-    effort: document.getElementById("effortSelect").value,
-  };
-  if (!newSettings.apiKey) {
-    document.getElementById("settings-error").textContent = "API key is required.";
-    return;
-  }
-  if (!newSettings.model) {
-    document.getElementById("settings-error").textContent = "Model is required.";
-    return;
-  }
-  try {
-    await saveSettings(newSettings);
-    settings = newSettings;
-    showChatScreen();
-  } catch (err) {
-    document.getElementById("settings-error").textContent = "Could not save settings: " + err.message;
-  }
 }
 
 // -- chat ------------------------------------------------------------------
@@ -261,7 +195,7 @@ async function dispatchTurn(text, isDraftCandidate, attachments) {
     transcript.scrollTop = transcript.scrollHeight;
   };
 
-  const result = await sendTurnStreaming(settings, systemPrompt, history, onDelta);
+  const result = await sendTurnStreaming(systemPrompt, history, onDelta);
 
   setBusy(false);
 

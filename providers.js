@@ -1,27 +1,25 @@
 /*
 ============================================================================
- providers.js -- per-provider streaming chat calls
+ providers.js -- OpenRouter streaming chat call
 ============================================================================
 
  Mirrors V4's openrouter_client.py in spirit (same generator/callback shape:
- zero or more text deltas, then exactly one terminal result), but supports
- three providers instead of one, since this add-in is "bring your own key" --
- each user picks their own provider/model/key in Settings (see settings.js),
- not a fixed one baked into the app the way V4's config.ini was.
+ zero or more text deltas, then exactly one terminal result). OpenRouter with
+ openai/gpt-5.6-luna is the only provider and the only model -- the key,
+ model and reasoning effort are all baked in below, not user-configurable.
 
- All three providers were confirmed LIVE via real CORS preflight checks
- (OPTIONS requests, not just documentation) before this was written:
-   - OpenRouter: Access-Control-Allow-Origin: *  (no special header needed)
-   - OpenAI:     Access-Control-Allow-Origin echoes the request Origin;
-                 allows content-type + authorization headers
-   - Anthropic:  Access-Control-Allow-Origin: *, requires the
-                 anthropic-dangerous-direct-browser-access: true header
-                 (Anthropic's own documented flag for exactly this
-                 bring-your-own-key browser pattern)
+ An earlier revision supported OpenAI and Anthropic as well, with each user
+ supplying their own key via a Settings screen. That was removed on request
+ (2026-08-25): one provider, one model, one key, no settings.
 
- sendTurnStreaming(settings, systemPrompt, history, onDelta) -> Promise<{ok,
- text, error, refusalCategory}>
-   settings: {provider, apiKey, model, effort} from settings.js
+ SECURITY, stated plainly rather than buried: OPENROUTER_API_KEY below is a
+ real, live key shipped inside a task pane served from a PUBLIC GitHub Pages
+ site. Anyone who views the page source can read it and spend against this
+ account. This was an explicit, informed decision by the project owner, not
+ an oversight -- rotate the key at openrouter.ai if it is ever abused.
+
+ sendTurnStreaming(systemPrompt, history, onDelta) -> Promise<{ok, text,
+ error, refusalCategory}>
    history: [{role: "user"|"assistant", content: string}], NOT including the
             system prompt (that's passed separately, same split V4's
             build_system_prompt/history kept)
@@ -37,88 +35,39 @@
 ============================================================================
 */
 
-const PROVIDERS = {
-  openrouter: {
-    label: "OpenRouter",
-    // Reasonable default; user can override in Settings. openai/gpt-5.6-luna
-    // is what V4 uses server-side -- kept as the suggested default here too,
-    // not hardcoded/forced, since OpenRouter hosts many models and the user
-    // may prefer a different one.
-    defaultModel: "openai/gpt-5.6-luna",
-    supportsEffort: true,
-  },
-  openai: {
-    label: "OpenAI",
-    defaultModel: "gpt-5.1",
-    supportsEffort: false,
-  },
-  anthropic: {
-    label: "Anthropic",
-    defaultModel: "claude-opus-5",
-    supportsEffort: false,
-  },
-};
+// Baked-in OpenRouter credentials and call settings. Matches V4's
+// config.ini values (model openai/gpt-5.6-luna, effort medium).
+const OPENROUTER_API_KEY =
+  "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";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_MODEL = "openai/gpt-5.6-luna";
+const OPENROUTER_EFFORT = "medium";
 
-async function sendTurnStreaming(settings, systemPrompt, history, onDelta) {
-  if (!settings || !settings.apiKey) {
-    return { ok: false, error: "No API key configured. Open Settings and enter your API key." };
-  }
-  const provider = settings.provider;
-  if (provider === "openrouter") {
-    return _streamOpenAiCompatible(
-      "https://openrouter.ai/api/v1/chat/completions",
-      settings,
-      systemPrompt,
-      history,
-      onDelta,
-      { reasoning_effort: settings.effort || "medium" }
-    );
-  }
-  if (provider === "openai") {
-    return _streamOpenAiCompatible(
-      "https://api.openai.com/v1/chat/completions",
-      settings,
-      systemPrompt,
-      history,
-      onDelta,
-      {}
-    );
-  }
-  if (provider === "anthropic") {
-    return _streamAnthropic(settings, systemPrompt, history, onDelta);
-  }
-  return { ok: false, error: "Unknown provider: " + provider };
-}
-
-// -- OpenRouter / OpenAI share the same Chat Completions request/response
-//    shape (OpenRouter is an OpenAI-compatible proxy) -- one implementation
-//    for both, parameterized by URL and extra per-provider body fields,
-//    mirroring how openrouter_client.py itself is just the openai SDK
-//    pointed at a different base_url.
-async function _streamOpenAiCompatible(url, settings, systemPrompt, history, onDelta, extraBody) {
+async function sendTurnStreaming(systemPrompt, history, onDelta) {
   const messages = [{ role: "system", content: systemPrompt }].concat(history);
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetch(OPENROUTER_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer " + settings.apiKey,
+        Authorization: "Bearer " + OPENROUTER_API_KEY,
       },
-      body: JSON.stringify(Object.assign({
-        model: settings.model,
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
         messages: messages,
         stream: true,
-      }, extraBody)),
+        reasoning_effort: OPENROUTER_EFFORT,
+      }),
     });
   } catch (err) {
-    return { ok: false, error: "Network error contacting " + url + ": " + err };
+    return { ok: false, error: "Network error contacting openrouter.ai: " + err };
   }
 
   if (!response.ok) {
     const bodyText = await _safeReadText(response);
     if (response.status === 401) {
-      return { ok: false, error: "API key rejected (401). Check your key in Settings." };
+      return { ok: false, error: "OpenRouter rejected the built-in API key (401)." };
     }
     if (response.status === 429) {
       return { ok: false, error: "Rate limited (429). Wait a moment and try again." };
@@ -126,16 +75,16 @@ async function _streamOpenAiCompatible(url, settings, systemPrompt, history, onD
     return { ok: false, error: "API error (HTTP " + response.status + "): " + bodyText };
   }
 
-  return _readOpenAiCompatibleSse(response, onDelta);
+  return _readSse(response, onDelta);
 }
 
-// Parses an OpenAI-compatible Server-Sent-Events stream: lines starting
-// "data: {json}", terminated by a literal "data: [DONE]" line. Each JSON
-// chunk's choices[0].delta.content is the incremental text, same field path
-// openrouter_client.py reads via the openai SDK's typed chunk.choices[0]
-// .delta.content -- this is that same wire format, hand-parsed here since
-// there is no SDK in a browser task pane.
-async function _readOpenAiCompatibleSse(response, onDelta) {
+// Parses OpenRouter's OpenAI-compatible Server-Sent-Events stream: lines
+// starting "data: {json}", terminated by a literal "data: [DONE]" line. Each
+// JSON chunk's choices[0].delta.content is the incremental text, same field
+// path openrouter_client.py reads via the openai SDK's typed
+// chunk.choices[0].delta.content -- this is that same wire format,
+// hand-parsed here since there is no SDK in a browser task pane.
+async function _readSse(response, onDelta) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
@@ -183,100 +132,6 @@ async function _readOpenAiCompatibleSse(response, onDelta) {
   }
   if (!text) {
     return { ok: false, error: "Model finished (" + finishReason + ") without producing any text." };
-  }
-  return { ok: true, text: text };
-}
-
-// Anthropic's Messages API has a different wire shape from OpenAI-compatible
-// APIs (SSE event TYPES like "content_block_delta", not a flat delta.content
-// per chunk) -- kept as its own function rather than shoehorned into the
-// shared one above, same reasoning V4 had for isolating provider-specific
-// code (see the master prompt's own "isolate provider-specific code"
-// guidance).
-async function _streamAnthropic(settings, systemPrompt, history, onDelta) {
-  let response;
-  try {
-    response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": settings.apiKey,
-        "anthropic-version": "2023-06-01",
-        // Anthropic's own documented flag enabling exactly this
-        // bring-your-own-key, direct-from-browser pattern -- confirmed live
-        // via a real CORS preflight before this was written, not assumed
-        // from documentation alone.
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify({
-        model: settings.model,
-        max_tokens: 8000,
-        system: systemPrompt,
-        messages: history,
-        stream: true,
-      }),
-    });
-  } catch (err) {
-    return { ok: false, error: "Network error contacting api.anthropic.com: " + err };
-  }
-
-  if (!response.ok) {
-    const bodyText = await _safeReadText(response);
-    if (response.status === 401) {
-      return { ok: false, error: "API key rejected (401). Check your key in Settings." };
-    }
-    if (response.status === 429) {
-      return { ok: false, error: "Rate limited (429). Wait a moment and try again." };
-    }
-    return { ok: false, error: "API error (HTTP " + response.status + "): " + bodyText };
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-  let textParts = [];
-  let stopReason = null;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice("data:".length).trim();
-        if (!payload) continue;
-        let parsed;
-        try {
-          parsed = JSON.parse(payload);
-        } catch (err) {
-          continue;
-        }
-        if (parsed.type === "content_block_delta" && parsed.delta && parsed.delta.type === "text_delta") {
-          textParts.push(parsed.delta.text);
-          onDelta(parsed.delta.text);
-        } else if (parsed.type === "message_delta" && parsed.delta && parsed.delta.stop_reason) {
-          stopReason = parsed.delta.stop_reason;
-        }
-      }
-    }
-  } catch (err) {
-    return { ok: false, error: "Error while streaming: " + err };
-  }
-
-  const text = textParts.join("").trim();
-
-  // Opus 5's refusal-as-200 behavior (documented in V4's own provider notes)
-  // has no direct Anthropic-streaming-SSE equivalent surfaced here yet --
-  // stop_reason "refusal" IS a real documented value, checked the same way.
-  if (stopReason === "refusal") {
-    return { ok: false, refusalCategory: "refusal" };
-  }
-  if (!text) {
-    return { ok: false, error: "Model finished (" + stopReason + ") without producing any text." };
   }
   return { ok: true, text: text };
 }

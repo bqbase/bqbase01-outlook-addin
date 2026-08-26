@@ -36,7 +36,7 @@ body {
   padding: 4px 8px;
 }
 
-#screen-chat, #screen-settings {
+#screen-chat {
   padding: 10px 12px;
 }
 
@@ -167,43 +167,4 @@ button.secondary {
   padding: 6px 14px;
   cursor: pointer;
   font-size: 13px;
-}
-
-.field {
-  margin-bottom: 12px;
-}
-
-.field label {
-  display: block;
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.field input, .field select {
-  width: 100%;
-  padding: 6px;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  font-size: 13px;
-}
-
-.field .note {
-  color: #6b6b6b;
-  font-size: 11px;
-  margin-top: 4px;
-}
-
-.security-note {
-  background: #fff8e1;
-  border: 1px solid #e0c05c;
-  border-radius: 4px;
-  padding: 8px;
-  font-size: 12px;
-  margin-bottom: 12px;
-}
-
-#settings-error {
-  color: #c0362c;
-  font-size: 12px;
-  margin-top: 6px;
 }

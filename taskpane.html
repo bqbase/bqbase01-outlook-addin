@@ -9,7 +9,6 @@
 <body>
   <div class="header">
     <h1>BQBase-01</h1>
-    <button id="settingsBtn" type="button">Settings</button>
   </div>
 
   <div id="screen-loading">
@@ -30,58 +29,7 @@
     </div>
   </div>
 
-  <div id="screen-settings" class="hidden">
-    <div class="security-note">
-      Your API key is stored in your Outlook account's roaming add-in settings
-      (syncs across your own devices) and is sent directly from your browser
-      to your chosen provider's API &mdash; never to any server this add-in's
-      developer operates. Microsoft's own documentation notes roaming
-      settings are not encrypted secure storage, so treat this the way you'd
-      treat any key saved in a browser: don't use this on a shared/public
-      computer.
-    </div>
-
-    <div class="field">
-      <label for="providerSelect">Provider</label>
-      <select id="providerSelect">
-        <option value="openrouter">OpenRouter</option>
-        <option value="openai">OpenAI</option>
-        <option value="anthropic">Anthropic</option>
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="apiKeyInput">API Key</label>
-      <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste your API key here" />
-    </div>
-
-    <div class="field">
-      <label for="modelInput">Model</label>
-      <input id="modelInput" type="text" placeholder="e.g. openai/gpt-5.6-luna" />
-      <div class="note" id="modelNote"></div>
-    </div>
-
-    <div class="field" id="effortField">
-      <label for="effortSelect">Reasoning effort</label>
-      <select id="effortSelect">
-        <option value="none">none</option>
-        <option value="minimal">minimal</option>
-        <option value="low">low</option>
-        <option value="medium" selected>medium</option>
-        <option value="high">high</option>
-        <option value="xhigh">xhigh</option>
-      </select>
-    </div>
-
-    <div class="action-row">
-      <button id="saveSettingsBtn" class="primary" type="button">Save</button>
-      <button id="cancelSettingsBtn" class="secondary" type="button">Cancel</button>
-    </div>
-    <div id="settings-error"></div>
-  </div>
-
   <script src="providers.js"></script>
-  <script src="settings.js"></script>
   <script src="mail-context.js"></script>
   <script src="attachments.js"></script>
   <script src="insert.js"></script>

@@ -7,10 +7,10 @@
     xsi:type="MailApp">
   <Id>b7e1a5c2-1f3d-4a9e-9c2a-5b6d7e8f9a01</Id>
   <Version>1.0.0.0</Version>
-  <ProviderName>BQBase-01</ProviderName>
+  <ProviderName>BQBase</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="BQBase-01" />
-  <Description DefaultValue="Chat with an AI assistant (your own API key, any of OpenRouter/OpenAI/Anthropic) to draft and refine email replies, right inside Outlook." />
+  <DisplayName DefaultValue="BQBase Email Assistant - v1.0" />
+  <Description DefaultValue="Chat with an AI assistant to draft and refine email replies, right inside Outlook." />
   <IconUrl DefaultValue="https://bqbase.github.io/bqbase01-outlook-addin/icon-32.png" />
   <HighResolutionIconUrl DefaultValue="https://bqbase.github.io/bqbase01-outlook-addin/icon-64.png" />
   <SupportUrl DefaultValue="https://github.com/bqbase/bqbase01-outlook-addin" />
@@ -120,11 +120,11 @@
         <bt:Url id="Taskpane.Url" DefaultValue="https://bqbase.github.io/bqbase01-outlook-addin/taskpane.html" />
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="GroupLabel" DefaultValue="BQBase-01" />
-        <bt:String id="TaskpaneButton.Label" DefaultValue="BQBase-01" />
+        <bt:String id="GroupLabel" DefaultValue="BQBase" />
+        <bt:String id="TaskpaneButton.Label" DefaultValue="BQBase" />
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open the BQBase-01 task pane" />
+        <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open the BQBase Email Assistant - v1.0 task pane" />
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>

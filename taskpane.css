@@ -14,28 +14,6 @@ body {
   font-size: 13px;
 }
 
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid #e0e0e0;
-}
-
-.header h1 {
-  font-size: 15px;
-  margin: 0;
-}
-
-.header button {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 13px;
-  color: #0066cc;
-  padding: 4px 8px;
-}
-
 #screen-chat {
   padding: 10px 12px;
 }

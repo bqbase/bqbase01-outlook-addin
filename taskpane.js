@@ -22,7 +22,6 @@ Office.onReady((info) => {
 
   document.getElementById("screen-loading").classList.add("hidden");
 
-  document.getElementById("sendBtn").addEventListener("click", onSend);
   document.getElementById("insertBtn").addEventListener("click", onInsert);
   document.getElementById("input-box").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -73,9 +72,10 @@ function appendTurn(text, cssClass) {
   return div;
 }
 
+// Disabling the input box is the whole busy guard now -- there is no submit
+// button to disable, since Enter is the only way to submit.
 function setBusy(isBusy) {
   busy = isBusy;
-  document.getElementById("sendBtn").disabled = isBusy;
   document.getElementById("input-box").disabled = isBusy;
 }
 
@@ -140,7 +140,7 @@ async function onSend() {
   const inputBox = document.getElementById("input-box");
   const text = inputBox.value.trim();
   // A message with no typed text but pending attachments is valid --
-  // e.g. drop a PDF and hit Send with nothing typed.
+  // e.g. drop a PDF and press Enter with nothing typed.
   if (!text && pendingAttachments.length === 0) return;
 
   let display = "You: " + (text || "(no message)");

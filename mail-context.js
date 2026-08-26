@@ -26,6 +26,13 @@ const BASE_SYSTEM_PROMPT =
   "with unnecessary sections or restate things the recipient already " +
   "knows. Write what the user asked for; do not widen the task into a " +
   "longer or more elaborate email than requested.\n\n" +
+  "NEVER leave a fill-in-the-blank placeholder in a draft -- no " +
+  "\"[Your Name]\", \"[Company]\", \"[date]\", or any other bracketed " +
+  "stand-in. Sign off with the user's own name, given below. Outlook adds " +
+  "the user's signature automatically, so end the body at the sign-off " +
+  "line and never invent contact details, titles, or a signature block. " +
+  "If some other detail is genuinely missing and you cannot infer it, ask " +
+  "the user for it instead of writing a placeholder.\n\n" +
   "Whenever your reply IS a complete, ready-to-insert email draft (the " +
   "user can take it as-is and put it straight into the email body), " +
   "structure your ENTIRE response as exactly this, with nothing else " +
@@ -96,15 +103,37 @@ async function buildMailContextSummary(item) {
   return "The user is composing a brand new email (not a reply).\nSubject so far: " + subject;
 }
 
+// The signed-in user's own name and address, so the model can sign a draft
+// instead of leaving a "[Your Name]" placeholder. Wrapped because
+// userProfile is absent in some hosts -- an unavailable name must degrade to
+// no name, never to a crash.
+function describeUser() {
+  try {
+    const p = Office.context.mailbox.userProfile;
+    if (!p) return "";
+    const name = (p.displayName || "").trim();
+    const address = (p.emailAddress || "").trim();
+    if (!name && !address) return "";
+    return (
+      "\n\nThe user you are writing for is " + (name || address) +
+      (name && address ? " <" + address + ">" : "") +
+      ". Sign drafts with their name."
+    );
+  } catch (err) {
+    return "";
+  }
+}
+
 async function buildSystemPrompt(item) {
-  if (!item) return BASE_SYSTEM_PROMPT;
+  const who = describeUser();
+  if (!item) return BASE_SYSTEM_PROMPT + who;
   try {
     const context = await buildMailContextSummary(item);
-    return BASE_SYSTEM_PROMPT + "\n\n" + context;
+    return BASE_SYSTEM_PROMPT + who + "\n\n" + context;
   } catch (err) {
     // A read failure must not crash the add-in -- fall back to a
     // context-free prompt and keep going.
-    return BASE_SYSTEM_PROMPT;
+    return BASE_SYSTEM_PROMPT + who;
   }
 }
 

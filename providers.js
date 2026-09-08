@@ -74,6 +74,12 @@ async function sendTurnStreaming(systemPrompt, history, onDelta) {
     if (response.status === 403) {
       return { ok: false, error: "The proxy refused this request (403). Check its allowed origins and model." };
     }
+    if (response.status === 402) {
+      // The daily spending cap. Shown verbatim because only the Worker knows
+      // the figure and when it resets -- and because "wait a moment", the
+      // 429 wording below, would be a lie here.
+      return { ok: false, error: _serverMessage(bodyText) || "Daily spending cap reached." };
+    }
     if (response.status === 429) {
       return { ok: false, error: "Rate limited (429). Wait a moment and try again." };
     }
@@ -137,6 +143,17 @@ async function _readSse(response, onDelta) {
     return { ok: false, error: "Model finished (" + finishReason + ") without producing any text." };
   }
   return { ok: true, text: text };
+}
+
+// Pulls the human-readable message out of the Worker's error envelope,
+// {error:{message}}, so a server-authored explanation reaches the user
+// instead of a raw JSON blob.
+function _serverMessage(bodyText) {
+  try {
+    return JSON.parse(bodyText).error.message;
+  } catch (err) {
+    return null;
+  }
 }
 
 async function _safeReadText(response) {

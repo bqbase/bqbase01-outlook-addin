@@ -31,7 +31,11 @@ const UNSUPPORTED_BUT_KNOWN = new Set([".docx", ".xlsx", ".msg"]); // clear erro
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // 20MB per file
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
-const MAX_EXTRACTED_TEXT_CHARS = 200000; // truncation ceiling
+// No truncation ceiling. A .txt attachment is sent whole; the only bound
+// is the Worker's 30MB body cap. The old 200,000-char limit cut documents
+// off mid-sentence and told the model so, which quietly degraded exactly
+// the attachment review this assistant exists for -- and it was never a
+// cost question: 200,000 chars is ~50,000 tokens, about one cent.
 
 function classifyFile(filename) {
   const ext = _extOf(filename);
@@ -91,10 +95,7 @@ async function _processOneFile(file) {
       return { filename: file.name, category, contentBlock: { type: "file", file: { filename: file.name, file_data: dataUri } } };
     }
     if (category === "txt") {
-      let text = await _readAsText(file);
-      if (text.length > MAX_EXTRACTED_TEXT_CHARS) {
-        text = text.slice(0, MAX_EXTRACTED_TEXT_CHARS) + "\n...[truncated -- file was longer than " + MAX_EXTRACTED_TEXT_CHARS + " characters]";
-      }
+      const text = await _readAsText(file);
       return { filename: file.name, category, extractedText: text };
     }
   } catch (err) {

@@ -173,11 +173,12 @@ async function maybeAutoSuggestReplyOptions() {
   );
 }
 
-// The transcript labels each reply with the model actually being called,
-// read from providers.js's own constant so the label can never drift from
-// the model again. It read "Claude:" until 2026-09-08 while every call
-// had been going to openai/gpt-5.6-luna.
-const ASSISTANT_LABEL = OPENROUTER_MODEL + ":\n";
+// A neutral label for the model's turns. It read "Claude:" until 2026-09-08
+// while every call went to openai/gpt-5.6-luna, then briefly showed that
+// model id -- accurate, but long and noisy sitting next to "You:".
+// "Assistant:" stays true whichever model providers.js is pointed at, so it
+// cannot go stale the way the old hardcoded name did.
+const ASSISTANT_LABEL = "Assistant:\n";
 
 async function dispatchTurn(text, isDraftCandidate, attachments) {
   const content = attachments && attachments.length ? buildMessageContent(text, attachments) : text;

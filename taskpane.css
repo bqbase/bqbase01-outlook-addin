@@ -146,3 +146,15 @@ button.secondary {
   cursor: pointer;
   font-size: 13px;
 }
+
+/* Inline Markdown rendered by renderAssistantTurn(). Built as real elements
+   from textContent -- never innerHTML -- so model output cannot become
+   markup. Bold and italic need no rules; code does. */
+
+.turn code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  background: #f0f0f0;
+  border-radius: 3px;
+  padding: 0 3px;
+}

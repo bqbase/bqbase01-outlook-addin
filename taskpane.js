@@ -180,6 +180,56 @@ async function maybeAutoSuggestReplyOptions() {
 // cannot go stale the way the old hardcoded name did.
 const ASSISTANT_LABEL = "Assistant:\n";
 
+// Renders the small subset of Markdown the model actually emits --
+// **bold**, *italic*, `code` -- as real elements.
+//
+// NOTHING HERE USES innerHTML, deliberately. Model output is derived in part
+// from an email the user RECEIVED, so treating it as markup would let a
+// hostile or malformed message inject into the pane. Every piece of that
+// text is placed with textContent or createTextNode and only strong/em/code
+// elements are ever created, so the formatting is gained without giving the
+// text any power to become markup.
+//
+// This affects the TRANSCRIPT ONLY. The draft that goes into the email is
+// still inserted verbatim by insert.js, so Markdown in a draft body would
+// reach the recipient as literal asterisks -- a separate, still-open issue.
+//
+// Kept identical to chrome_extension/sidepanel.js. Change both together.
+const INLINE_MARKDOWN = /\*\*([^*]+)\*\*|\*([^*\n]+)\*|`([^`\n]+)`/g;
+
+function _markdownNodes(text) {
+  const nodes = [];
+  let last = 0;
+  let match;
+  INLINE_MARKDOWN.lastIndex = 0; // the regex is global and reused across turns
+  while ((match = INLINE_MARKDOWN.exec(text)) !== null) {
+    if (match.index > last) {
+      nodes.push(document.createTextNode(text.slice(last, match.index)));
+    }
+    let tag = "strong";
+    let inner = match[1];
+    if (match[2] !== undefined) {
+      tag = "em";
+      inner = match[2];
+    } else if (match[3] !== undefined) {
+      tag = "code";
+      inner = match[3];
+    }
+    const el = document.createElement(tag);
+    el.textContent = inner; // textContent, never innerHTML -- see above
+    nodes.push(el);
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) nodes.push(document.createTextNode(text.slice(last)));
+  return nodes;
+}
+
+function renderAssistantTurn(el, text) {
+  el.textContent = "";
+  el.appendChild(document.createTextNode(ASSISTANT_LABEL));
+  for (const node of _markdownNodes(text)) el.appendChild(node);
+}
+
 async function dispatchTurn(text, isDraftCandidate, attachments) {
   const content = attachments && attachments.length ? buildMessageContent(text, attachments) : text;
   history.push({ role: "user", content: content });
@@ -191,7 +241,7 @@ async function dispatchTurn(text, isDraftCandidate, attachments) {
   let streamedText = "";
   const onDelta = (chunk) => {
     streamedText += chunk;
-    assistantDiv.textContent = ASSISTANT_LABEL + streamedText;
+    renderAssistantTurn(assistantDiv, streamedText);
     const transcript = document.getElementById("transcript");
     transcript.scrollTop = transcript.scrollHeight;
   };
@@ -222,7 +272,7 @@ async function dispatchTurn(text, isDraftCandidate, attachments) {
         displayText = proposedSubject ? "Subject: " + proposedSubject + "\n\n" + body : body;
       }
     }
-    assistantDiv.textContent = ASSISTANT_LABEL + displayText;
+    renderAssistantTurn(assistantDiv, displayText);
   } else {
     // Roll back the just-pushed user turn on failure -- a retry
     // shouldn't desync history with a dangling unanswered user turn.

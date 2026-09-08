@@ -1,11 +1,16 @@
 /*
 ============================================================================
- providers.js -- OpenRouter streaming chat call
+ providers.js -- streaming chat call to the BQBase proxy
 ============================================================================
 
  Streams a chat turn: zero or more text deltas via the onDelta callback,
- then exactly one terminal result. OpenRouter with openai/gpt-5.6-luna is
- the only provider and the only model, and neither is user-configurable.
+ then exactly one terminal result. One model, not user-configurable.
+
+ This file does NOT know which provider is upstream, and should not: it
+ talks only to the Worker, which decides. The model id sent here is the id
+ the WORKER expects from clients; the Worker translates it for whichever
+ provider it is pointed at. That indirection is what let the upstream move
+ from OpenRouter to OpenAI on 2026-09-08 with no change to this file.
 
  An earlier revision supported OpenAI and Anthropic as well, with each user
  supplying their own key via a Settings screen. That was removed on request
@@ -33,10 +38,13 @@
 */
 
 // The proxy endpoint. NO API KEY LIVES HERE -- see this file's header.
-// Deployed from ../worker; change this if the Worker is renamed.
+// The word "openrouter" in this hostname is a LEFTOVER from the
+// original provider; the Worker has called OpenAI directly since
+// 2026-09-08. Renaming the Worker would break all three clients at
+// once, so the stale name was kept deliberately.
 const PROXY_URL = "https://bqbase-openrouter-proxy.bqbase.workers.dev";
-const OPENROUTER_MODEL = "openai/gpt-5.6-luna";
-const OPENROUTER_EFFORT = "medium";
+const REQUEST_MODEL = "openai/gpt-5.6-luna";
+const REASONING_EFFORT = "medium";
 
 async function sendTurnStreaming(systemPrompt, history, onDelta) {
   const messages = [{ role: "system", content: systemPrompt }].concat(history);
@@ -48,10 +56,10 @@ async function sendTurnStreaming(systemPrompt, history, onDelta) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: OPENROUTER_MODEL,
+        model: REQUEST_MODEL,
         messages: messages,
         stream: true,
-        reasoning_effort: OPENROUTER_EFFORT,
+        reasoning_effort: REASONING_EFFORT,
       }),
     });
   } catch (err) {
@@ -75,7 +83,7 @@ async function sendTurnStreaming(systemPrompt, history, onDelta) {
   return _readSse(response, onDelta);
 }
 
-// Parses OpenRouter's OpenAI-compatible Server-Sent-Events stream: lines
+// Parses an OpenAI-compatible Server-Sent-Events stream: lines
 // starting "data: {json}", terminated by a literal "data: [DONE]" line. Each
 // JSON chunk's choices[0].delta.content is the incremental text, same field
 // path -- hand-parsed here since there is no SDK in a browser task pane.

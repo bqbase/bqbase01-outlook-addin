@@ -4,7 +4,7 @@
 ============================================================================
 
  Wires together mail-context.js (read the email), providers.js (the streaming
- OpenRouter call), and insert.js (write the draft back) into the actual chat
+ model call), and insert.js (write the draft back) into the actual chat
  UI: a history list, streaming deltas rendered live, INSERT enabled only
  after a successful draft, and auto-suggest when a reply is opened.
 ============================================================================

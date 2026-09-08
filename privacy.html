@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy Policy — BQBase Email Assistant</title>
+<style>
+  body {
+    font-family: "Segoe UI", -apple-system, sans-serif;
+    color: #1a1a1a;
+    line-height: 1.55;
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 32px 20px 64px;
+  }
+  h1 { font-size: 24px; margin-bottom: 4px; }
+  h2 { font-size: 17px; margin-top: 30px; }
+  .updated { color: #6b6b6b; font-size: 13px; margin-top: 0; }
+  code { background: #f0f0f0; border-radius: 3px; padding: 0 4px; font-size: 13px; }
+  ul { padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  .note { background: #f5f7fa; border-left: 3px solid #0066cc; padding: 10px 14px; }
+</style>
+</head>
+<body>
+
+<h1>Privacy Policy — BQBase Email Assistant</h1>
+<p class="updated">Last updated 8 September 2026</p>
+
+<p>
+  BQBase Email Assistant is an email drafting assistant. It exists in two
+  forms that share one backend and one policy: an <strong>Outlook add-in</strong>
+  and a <strong>Gmail Chrome extension</strong>. This page describes exactly
+  what each one reads, what it sends, and where it goes.
+</p>
+
+<h2>What it reads</h2>
+<p>Only when you open the assistant panel, and only from the message you have open:</p>
+<ul>
+  <li>The subject, body text, and sender of the message currently open.</li>
+  <li>Your own display name and email address, so drafts can be signed with
+      your name instead of a placeholder.</li>
+  <li>Anything you type into the assistant's chat box.</li>
+  <li>Files you explicitly attach, by dragging them onto the panel or using
+      "Browse for file". Nothing is read from your device otherwise.</li>
+</ul>
+<p>
+  It does not read your mailbox, your folders, your contacts, other messages,
+  or any page other than the mail client you opened it in.
+</p>
+
+<h2>Where it is sent</h2>
+<p>
+  The above is sent to a Cloudflare Worker operated by BQBase, which adds an
+  API credential and forwards the request to
+  <a href="https://openrouter.ai/">OpenRouter</a>, which routes it to the
+  language model <code>openai/gpt-5.6-luna</code> to produce a reply. The
+  model's response comes back the same way.
+</p>
+<p>
+  Cloudflare and OpenRouter process this traffic under their own privacy
+  policies, as does the model provider OpenRouter routes to.
+</p>
+
+<h2>What is stored</h2>
+<ul>
+  <li><strong>The clients store nothing.</strong> The Chrome extension
+      declares no storage permission. The chat transcript lives only in the
+      open panel and is gone when you close it.</li>
+  <li><strong>The Worker stores and logs nothing.</strong> It does not write
+      message content anywhere. The only thing it holds is a short-lived,
+      in-memory count of recent requests per IP address, used to rate-limit
+      abuse; it is not persisted and is lost when the instance ends.</li>
+  <li>No API key is stored in either client. The credential lives only as an
+      encrypted secret on the Worker.</li>
+</ul>
+
+<h2>What is not done</h2>
+<ul>
+  <li>No analytics, telemetry, tracking pixels, or advertising.</li>
+  <li>No data is sold, rented, or shared with anyone outside the processing
+      chain described above.</li>
+  <li>No data is used to train models by BQBase.</li>
+  <li>Nothing is read or sent unless you open the panel and send a message.</li>
+</ul>
+
+<h2>Your control</h2>
+<p>
+  Removing the extension or add-in ends all access immediately. Because
+  nothing is stored, there is no retained data to delete.
+</p>
+
+<div class="note">
+  <p style="margin:0">
+    <strong>Please note:</strong> the content of emails you ask the assistant
+    about is sent to a third-party language model. Do not use it on messages
+    whose contents you are not permitted to disclose to an external service.
+  </p>
+</div>
+
+<h2>Contact</h2>
+<p>Questions about this policy: <a href="mailto:bqbase@gmail.com">bqbase@gmail.com</a></p>
+
+</body>
+</html>

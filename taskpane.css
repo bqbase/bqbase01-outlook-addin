@@ -158,3 +158,11 @@ button.secondary {
   border-radius: 3px;
   padding: 0 3px;
 }
+
+/* Bold spans inside an assistant turn -- the "1." "2." list markers and the
+   **bold** labels the model writes -- are red, so a list of reply options
+   scans at a glance against the green body text. Same red as .turn.error. */
+
+.turn.assistant strong {
+  color: #c0362c;
+}

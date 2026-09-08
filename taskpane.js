@@ -195,7 +195,11 @@ const ASSISTANT_LABEL = "Assistant:\n";
 // reach the recipient as literal asterisks -- a separate, still-open issue.
 //
 // Kept identical to chrome_extension/sidepanel.js. Change both together.
-const INLINE_MARKDOWN = /\*\*([^*]+)\*\*|\*([^*\n]+)\*|`([^`\n]+)`/g;
+// The fourth alternative is a line-leading ordered-list marker ("1.", "2."),
+// which is not Markdown emphasis at all but is treated as bold here so a
+// numbered list of reply options reads as a list. The "m" flag is what makes
+// "^" match at every line start rather than only the first.
+const INLINE_MARKDOWN = /\*\*([^*]+)\*\*|\*([^*\n]+)\*|`([^`\n]+)`|^(\d+\.)(?=\s)/gm;
 
 function _markdownNodes(text) {
   const nodes = [];
@@ -214,6 +218,8 @@ function _markdownNodes(text) {
     } else if (match[3] !== undefined) {
       tag = "code";
       inner = match[3];
+    } else if (match[4] !== undefined) {
+      inner = match[4]; // list marker -- stays "strong", styled with the label
     }
     const el = document.createElement(tag);
     el.textContent = inner; // textContent, never innerHTML -- see above

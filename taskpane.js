@@ -173,6 +173,12 @@ async function maybeAutoSuggestReplyOptions() {
   );
 }
 
+// The transcript labels each reply with the model actually being called,
+// read from providers.js's own constant so the label can never drift from
+// the model again. It read "Claude:" until 2026-09-08 while every call
+// had been going to openai/gpt-5.6-luna.
+const ASSISTANT_LABEL = OPENROUTER_MODEL + ":\n";
+
 async function dispatchTurn(text, isDraftCandidate, attachments) {
   const content = attachments && attachments.length ? buildMessageContent(text, attachments) : text;
   history.push({ role: "user", content: content });
@@ -180,11 +186,11 @@ async function dispatchTurn(text, isDraftCandidate, attachments) {
 
   const systemPrompt = await buildSystemPrompt(currentItem);
 
-  const assistantDiv = appendTurn("Claude:\n", "assistant");
+  const assistantDiv = appendTurn(ASSISTANT_LABEL, "assistant");
   let streamedText = "";
   const onDelta = (chunk) => {
     streamedText += chunk;
-    assistantDiv.textContent = "Claude:\n" + streamedText;
+    assistantDiv.textContent = ASSISTANT_LABEL + streamedText;
     const transcript = document.getElementById("transcript");
     transcript.scrollTop = transcript.scrollHeight;
   };
@@ -215,7 +221,7 @@ async function dispatchTurn(text, isDraftCandidate, attachments) {
         displayText = proposedSubject ? "Subject: " + proposedSubject + "\n\n" + body : body;
       }
     }
-    assistantDiv.textContent = "Claude:\n" + displayText;
+    assistantDiv.textContent = ASSISTANT_LABEL + displayText;
   } else {
     // Roll back the just-pushed user turn on failure -- a retry
     // shouldn't desync history with a dangling unanswered user turn.

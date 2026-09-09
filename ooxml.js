@@ -225,12 +225,51 @@ function _elements(text, name) {
       pos = tagEnd + 1;
       continue;
     }
-    const end = text.indexOf(close, tagEnd + 1);
+    const end = _matchingClose(text, name, tagEnd + 1);
     if (end === -1) break;                                 // unclosed: none can follow either
     out.push(text.slice(start, end + close.length));
     pos = end + close.length;
   }
   return out;
+}
+
+// The close that matches an opening tag, counting NESTING.
+//
+// Taking the first </name> was wrong for Word, because <w:p> nests: a text
+// box or shape anchored in a paragraph carries <w:txbxContent> holding its
+// own <w:p>. The host paragraph was therefore cut off at the text box's
+// inner </w:p>, and every run AFTER the anchor belonged to no element at
+// all -- so it was silently dropped. Measured: a contract whose clause 2
+// carried a "draft only" note lost the entire indemnity clause, and the
+// review read as complete.
+//
+// Linear: the cursor only moves forward, and once no further opening tag
+// exists the search for one is not repeated.
+function _matchingClose(text, name, from) {
+  const open = "<" + name;
+  const close = "</" + name + ">";
+  let depth = 1;
+  let pos = from;
+  let mayNest = true;
+  while (pos < text.length) {
+    const nextClose = text.indexOf(close, pos);
+    if (nextClose === -1) return -1;
+    const nextOpen = mayNest ? text.indexOf(open, pos) : -1;
+    if (nextOpen === -1) mayNest = false;
+    if (nextOpen !== -1 && nextOpen < nextClose) {
+      const tagEnd = text.indexOf(">", nextOpen);
+      if (tagEnd === -1) return -1;
+      const after = text[nextOpen + open.length];
+      const named = after === undefined || /[\s>/]/.test(after);
+      if (named && text[tagEnd - 1] !== "/") depth++;       // a real, non-empty nested one
+      pos = tagEnd + 1;
+      continue;
+    }
+    depth--;
+    if (depth === 0) return nextClose;
+    pos = nextClose + close.length;
+  }
+  return -1;
 }
 
 // Removes whole <name>...</name> subtrees, contents included, in one linear
@@ -257,11 +296,15 @@ function _removeElements(text, name) {
       pos = tagEnd + 1;
       continue;
     }
-    const end = text.indexOf(close, tagEnd + 1);
-    if (end === -1) {                                      // unclosed: drop the tag only
-      pos = tagEnd + 1;
-      continue;
-    }
+    const end = _matchingClose(text, name, tagEnd + 1);
+    // STOP, do not continue. Skipping to the next opening token and
+    // searching again for a closer that does not exist re-scans to the end
+    // of the string for every one of them: measured at 42 seconds for a
+    // 1,855-byte .docx of repeated "<w:del>", quadrupling per doubling, and
+    // never returning at the 64MB the inflate cap allows. _elements has
+    // always stopped here for exactly this reason; this did not, while its
+    // own comment claimed it could not backtrack.
+    if (end === -1) break;
     pos = end + close.length;                              // drop the whole subtree
   }
   parts.push(text.slice(pos));
@@ -332,16 +375,23 @@ function _textRuns(fragment, textTag, breakTags) {
     const gt = fragment.indexOf(">", lt);
     if (gt === -1) break;
     const inside = fragment.slice(lt + 1, gt);
-    const name = inside.split(/[\s/>]/)[0];
-    if (name === textTag && inside[inside.length - 1] !== "/") {
+    // A CLOSING tag starts with "/", and splitting on "/" would leave the
+    // name empty -- which silently disabled the nested-paragraph break.
+    const closing = inside[0] === "/";
+    const name = (closing ? inside.slice(1) : inside).split(/[\s/>]/)[0];
+    if (!closing && name === textTag && inside[inside.length - 1] !== "/") {
       const close = fragment.indexOf(closeTag, gt);
       if (close === -1) break;
       out.push(_decodeEntities(fragment.slice(gt + 1, close)));
       pos = close + closeTag.length;
       continue;
     }
-    if (breakTags.tab && name === breakTags.tab) out.push("\t");
-    if (breakTags.br && name === breakTags.br) out.push("\n");
+    if (!closing && breakTags.tab && name === breakTags.tab) out.push("\t");
+    if (!closing && breakTags.br && name === breakTags.br) out.push("\n");
+    // A NESTED paragraph CLOSING inside this one -- a text box anchored in
+    // the middle of a clause. Word draws it as its own block, so its text
+    // must not run straight into the sentence it was anchored to.
+    if (closing && breakTags.para && name === breakTags.para) out.push("\n");
     pos = gt + 1;
   }
   return out.join("");
@@ -413,7 +463,7 @@ async function _extractDocx(bytes, entries, budget) {
   let cleaned = _removeElements(xml, "w:del");
   cleaned = _removeElements(cleaned, "w:moveFrom");
   cleaned = _removeElements(cleaned, "mc:Fallback");
-  return _paragraphs(cleaned, "w:p", "w:t", { tab: "w:tab", br: "w:br" });
+  return _paragraphs(cleaned, "w:p", "w:t", { tab: "w:tab", br: "w:br", para: "w:p" });
 }
 
 async function _extractPptx(bytes, entries, budget) {
@@ -429,7 +479,7 @@ async function _extractPptx(bytes, entries, budget) {
     // <p:timing> -- so any entrance animation leaked "style.visibility" and
     // "ppt_x" into the slide's text as though the deck said it.
     const text = _paragraphs(await _readText(bytes, entries, slides[i], budget),
-                             "a:p", "a:t", { br: "a:br" });
+                             "a:p", "a:t", { br: "a:br", para: "a:p" });
     if (text) {
       produced += text.length;                             // checked as it grows, as in _extractXlsx
       if (produced > MAX_EXTRACTED_CHARS) throw new Error(TOO_MUCH_TEXT);

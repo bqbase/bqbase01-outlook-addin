@@ -307,6 +307,56 @@ function _codePoint(value, original) {
   return String.fromCodePoint(value);
 }
 
+// Reads the text of ONE paragraph by collecting only the DESIGNATED text
+// elements -- <w:t> in Word, <a:t> in PowerPoint -- plus the tab and break
+// markers, in document order.
+//
+// This is an ALLOWLIST, and that is the whole point. Stripping tags and
+// keeping whatever text remained was a blacklist against a specification
+// with hundreds of elements, and each audit round found another that had to
+// be excluded: tracked deletions (w:delText), field codes (w:instrText),
+// moved text, animation internals (p:attrName -> "style.visibility",
+// "ppt_x"), phonetic guides. Every one of those was text the application
+// does NOT show, handed to the model as document content. Naming the two
+// elements that genuinely carry prose ends that search: anything not on the
+// list is excluded because it was never included.
+//
+// Linear -- indexOf from a cursor that only moves forward.
+function _textRuns(fragment, textTag, breakTags) {
+  const out = [];
+  const closeTag = "</" + textTag + ">";
+  let pos = 0;
+  while (pos < fragment.length) {
+    const lt = fragment.indexOf("<", pos);
+    if (lt === -1) break;
+    const gt = fragment.indexOf(">", lt);
+    if (gt === -1) break;
+    const inside = fragment.slice(lt + 1, gt);
+    const name = inside.split(/[\s/>]/)[0];
+    if (name === textTag && inside[inside.length - 1] !== "/") {
+      const close = fragment.indexOf(closeTag, gt);
+      if (close === -1) break;
+      out.push(_decodeEntities(fragment.slice(gt + 1, close)));
+      pos = close + closeTag.length;
+      continue;
+    }
+    if (breakTags.tab && name === breakTags.tab) out.push("\t");
+    if (breakTags.br && name === breakTags.br) out.push("\n");
+    pos = gt + 1;
+  }
+  return out.join("");
+}
+
+// Every paragraph in a part, as lines. Paragraphs with no text drop out.
+function _paragraphs(xml, paraTag, textTag, breakTags) {
+  const lines = [];
+  for (const para of _elements(xml, paraTag)) {
+    const text = _textRuns(para, textTag, breakTags).trimEnd();
+    if (text) lines.push(text);
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 // Turns a fragment of OOXML into readable text: the given tags become line
 // breaks, everything else is dropped, entities are decoded.
 function _xmlToText(xml, breakTags) {
@@ -350,10 +400,20 @@ async function _extractDocx(bytes, entries, budget) {
   // appears TWICE -- once where it no longer belongs -- while Word shows it
   // once. <w:moveTo> is kept, exactly as <w:ins> is: that is where the text
   // now lives.
+  // <w:del> and <w:moveFrom> are still removed as SUBTREES, because both can
+  // hold ordinary <w:t> runs and the allowlist alone would keep them.
+  // <mc:Fallback> too: Word writes every text box twice, once as a modern
+  // <mc:Choice> and once as a VML fallback for old readers, and it renders
+  // only the Choice -- so keeping both handed the model each clause twice
+  // AND charged the customer for the second copy.
+  //
+  // w:instrText no longer needs a sweep: it is not <w:t>, so the allowlist
+  // never picks it up. The list below is now only what the allowlist cannot
+  // settle by itself.
   let cleaned = _removeElements(xml, "w:del");
   cleaned = _removeElements(cleaned, "w:moveFrom");
-  cleaned = _removeElements(cleaned, "w:instrText");
-  return _xmlToText(cleaned, ["w:p"]);
+  cleaned = _removeElements(cleaned, "mc:Fallback");
+  return _paragraphs(cleaned, "w:p", "w:t", { tab: "w:tab", br: "w:br" });
 }
 
 async function _extractPptx(bytes, entries, budget) {
@@ -365,7 +425,11 @@ async function _extractPptx(bytes, entries, budget) {
   const parts = [];
   let produced = 0;
   for (let i = 0; i < slides.length; i++) {
-    const text = _xmlToText(await _readText(bytes, entries, slides[i], budget), ["a:p"]);
+    // <a:t> only. The whole slide part used to be scanned, which swept in
+    // <p:timing> -- so any entrance animation leaked "style.visibility" and
+    // "ppt_x" into the slide's text as though the deck said it.
+    const text = _paragraphs(await _readText(bytes, entries, slides[i], budget),
+                             "a:p", "a:t", { br: "a:br" });
     if (text) {
       produced += text.length;                             // checked as it grows, as in _extractXlsx
       if (produced > MAX_EXTRACTED_CHARS) throw new Error(TOO_MUCH_TEXT);
@@ -382,7 +446,10 @@ async function _extractXlsx(bytes, entries, budget) {
   const sharedXml = await _readText(bytes, entries, "xl/sharedStrings.xml", budget);
   const shared = [];
   for (const si of _elements(sharedXml, "si")) {
-    shared.push(_decodeEntities(_stripTags(si)));
+    // <rPh> holds the phonetic reading Excel stores beside a CJK value and
+    // does not display. Keeping it appended the furigana straight onto the
+    // word with no separator, inventing a term the sheet never contained.
+    shared.push(_textRuns(_removeElements(si, "rPh"), "t", {}));
   }
 
   // Sheet NAMES live in workbook.xml while the CONTENT lives in numbered
@@ -424,7 +491,7 @@ async function _extractXlsx(bytes, entries, budget) {
           const index = value === undefined || value === "" ? -1 : Number(value);
           cells.push(Number.isInteger(index) && index >= 0 ? (shared[index] || "") : "");
         } else if (type === "inlineStr") {
-          cells.push(_decodeEntities(_stripTags(cell)));
+          cells.push(_textRuns(_removeElements(cell, "rPh"), "t", {}));
         } else {
           cells.push(value === undefined ? "" : _decodeEntities(value));
         }

@@ -101,6 +101,30 @@ body {
   background: #fdecea;
 }
 
+/* The chip is a <label>, so the whole thing is a click target for its own
+   checkbox -- the filename is much easier to hit than a 13px box. */
+.chip {
+  cursor: pointer;
+  user-select: none;
+}
+
+.chip.chip-error {
+  cursor: default;
+}
+
+/* Unticked reads as faded rather than hidden: the file is still attached and
+   can be brought back, which a disappearing chip would not convey. */
+.chip.chip-off {
+  opacity: 0.55;
+}
+
+.chip input[type="checkbox"] {
+  margin: 0;
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
 .chip button {
   border: none;
   background: none;

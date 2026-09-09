@@ -295,20 +295,50 @@ function removeAttachment(index) {
   renderAttachmentChips();
 }
 
+// The files that will actually be sent: usable, and ticked. Everything that
+// prices or reviews goes through here, so the number quoted and the files
+// reviewed can never drift apart from what the chips show.
+function selectedAttachments() {
+  return pendingAttachments.filter((a) => !a.error && a.selected !== false);
+}
+
 function renderAttachmentChips() {
   const row = document.getElementById("chips-row");
   row.innerHTML = "";
   pendingAttachments.forEach((att, index) => {
-    const chip = document.createElement("span");
-    chip.className = "chip" + (att.error ? " chip-error" : "");
+    const chip = document.createElement("label"); // label, so the text ticks it too
+    chip.className = "chip" + (att.error ? " chip-error" : "") +
+      (!att.error && att.selected === false ? " chip-off" : "");
     chip.title = att.error || att.filename;
+
+    // A file that cannot be read gets no checkbox: there is nothing to
+    // include, and an unticked box would imply it could be.
+    if (!att.error) {
+      const tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.checked = att.selected !== false;
+      tick.addEventListener("change", () => {
+        att.selected = tick.checked;
+        renderAttachmentChips();
+      });
+      chip.appendChild(tick);
+    }
+
     const label = document.createElement("span");
     label.textContent = att.filename;
+    chip.appendChild(label);
+
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.textContent = "×"; // ×
-    removeBtn.addEventListener("click", () => removeAttachment(index));
-    chip.appendChild(label);
+    removeBtn.title = "Remove this file";
+    // Stops the click reaching the surrounding label, which would otherwise
+    // toggle the checkbox on its way out.
+    removeBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      removeAttachment(index);
+    });
     chip.appendChild(removeBtn);
     row.appendChild(chip);
   });
@@ -325,15 +355,29 @@ function renderAttachRow() {
     row.classList.add("hidden");
     return;
   }
-  const coins = estimateCoins(usable);
+  // With files present but all unticked the row STAYS, with the button dead.
+  // Making it vanish would look like the attachments had been lost.
+  const chosen = selectedAttachments();
+  if (chosen.length === 0) {
+    document.getElementById("attach-estimate").textContent = "tick a file to review";
+    document.getElementById("reviewAttachBtn").textContent = "Review attachments";
+    document.getElementById("reviewAttachBtn").disabled = true;
+    row.classList.remove("hidden");
+    return;
+  }
+  const coins = estimateCoins(chosen);
   // While an Office document is still being read, the total is not yet the
   // real one. Saying so beats showing a number that is about to change on its
   // own, which reads as the price moving after it was quoted.
   document.getElementById("attach-estimate").textContent = attachEstimatePending
     ? "reading documents..."
     : coins + (coins === 1 ? " coin" : " coins");
-  document.getElementById("reviewAttachBtn").textContent =
-    usable.length === 1 ? "Review attachment" : "Review " + usable.length + " attachments";
+  // Says "3 of 5" only when some are unticked, so the common case where
+  // everything is included stays uncluttered.
+  const label = chosen.length === 1 ? "Review attachment"
+    : chosen.length === usable.length ? "Review " + chosen.length + " attachments"
+    : "Review " + chosen.length + " of " + usable.length + " attachments";
+  document.getElementById("reviewAttachBtn").textContent = label;
   document.getElementById("reviewAttachBtn").disabled = attachEstimatePending || busy;
   row.classList.remove("hidden");
 }
@@ -364,7 +408,7 @@ async function onSend() {
 // for twice.
 async function onReviewAttachments() {
   if (busy) return;
-  const usable = pendingAttachments.filter((a) => !a.error);
+  const usable = selectedAttachments();
   if (usable.length === 0) return;
 
   const inputBox = document.getElementById("input-box");
@@ -377,7 +421,10 @@ async function onReviewAttachments() {
   appendTurn(line, "user");
 
   inputBox.value = "";
-  pendingAttachments = [];
+  // Only the files being reviewed leave the row. Anything left unticked stays
+  // put, so a customer who reviews two of five contracts now can review the
+  // rest afterwards without hunting the email down again.
+  pendingAttachments = pendingAttachments.filter((a) => !usable.includes(a));
   renderAttachmentChips();
 
   // Files already on the message arrive as metadata only -- their bytes are

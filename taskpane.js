@@ -403,11 +403,33 @@ async function onReviewAttachments() {
     return;
   }
 
+  // With nothing typed, a review ends in three fresh reply options rather
+  // than a summary: the point of reading the attachments is to reply better,
+  // and the options the pane suggested when the email opened were written
+  // without any of this. Mirrors the wording of maybeAutoSuggestReplyOptions
+  // so the two read as the same feature at different moments.
+  //
+  // Anything TYPED wins. Someone who asks "does this contract mention a
+  // penalty?" wants that answered, not three ways to reply.
+  // NOT a draft candidate when it is going to answer with three options:
+  // isDraftCandidate stores the reply as lastDraft and lights up Insert /
+  // Reply, so leaving it true would let the customer paste a numbered list
+  // of options into the email as though it were the reply.
+  const wantsOptions = !text;
   await dispatchTurn(
-    text || "Review the attached document and tell me what matters for my reply.",
-    true, ready, "attachment"
+    text || REVIEW_THEN_OPTIONS_PROMPT,
+    !wantsOptions, ready, "attachment"
   );
 }
+
+const REVIEW_THEN_OPTIONS_PROMPT =
+  "Read the attached file(s). Do NOT write a reply yet. First give me a " +
+  "short account of what is in them that actually bears on how I answer " +
+  "-- figures, dates, obligations, anything that changes the picture. " +
+  "Then, combining that with the email itself, suggest 3 different " +
+  "approaches I could take in replying (one sentence each), numbered 1, 2 " +
+  "and 3. If the attachments change what a sensible reply looks like " +
+  "compared with the email alone, say so.";
 
 // Fires once on a reply/forward: a synthetic first turn, not shown as
 // "You: ...". Auto-reading the ORIGINAL message's own attachments is not

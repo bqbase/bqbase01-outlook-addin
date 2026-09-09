@@ -372,14 +372,21 @@ async function _extractXlsx(bytes, entries, budget) {
       // A row of nothing but empty cells carries no information and would
       // otherwise pad a big sheet with blank lines the model has to read.
       if (cells.some((c) => c !== "")) {
+        // Measured from the PARTS, before joining them. The previous version
+        // checked line.length -- after cells.join() had already allocated the
+        // whole amplified row, which is the one allocation the check exists
+        // to prevent. Pushing shared-string references costs nothing; the
+        // blow-up happens entirely inside the join.
+        let width = cells.length;                          // the tab separators
+        for (const cell of cells) width += cell.length;
+        if (produced + width > MAX_EXTRACTED_CHARS) throw new Error(TOO_MUCH_TEXT);
         const line = cells.join("\t");
         // Checked AS IT GROWS, not once at the end. A sheet is a list of
         // REFERENCES into the shared-string table, so a small part can point
         // at one long string thousands of times and amplify far past what the
         // inflate cap allows -- and the final check cannot help if the string
         // it is meant to measure has already exhausted memory.
-        produced += line.length + 1;
-        if (produced > MAX_EXTRACTED_CHARS) throw new Error(TOO_MUCH_TEXT);
+        produced += width + 1;
         rows.push(line);
       }
     }

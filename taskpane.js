@@ -21,6 +21,10 @@ let boundEmail = ""; // mailbox the service says this token belongs to
 // free -- the pane cannot infer that, because the Worker meters a teed copy
 // of the response and charges for an answer the pane may have failed to read.
 let lastCharged = 0;
+// The credit limit from the last /balance. The per-turn coin headers do not
+// carry it, so it is remembered here to keep the bar consistent between a
+// full refresh and a turn update.
+let lastFloor = null;
 
 Office.onReady(async (info) => {
   if (info.host !== Office.HostType.Outlook) return;
@@ -34,7 +38,6 @@ Office.onReady(async (info) => {
   // Before the first getToken(), or startup reads only this machine's copy
   // and sends a returning customer back to the settings screen.
   setTokenStore(_roamingTokenStore());
-  _migrateTokenToMailbox();
 
   document.getElementById("screen-loading").classList.add("hidden");
 
@@ -76,7 +79,22 @@ Office.onReady(async (info) => {
     return;
   }
   showChatScreen();
-  await refreshCoinBar();
+  const balance = await refreshCoinBar();
+  // A token the service REJECTS used to leave a chat screen with an empty
+  // coin bar and no explanation -- which is what a wrong, unregistered or
+  // suspended account looks like from the customer's side. Send them to the
+  // one screen that can say why, with the service's own wording.
+  if (!balance.ok) {
+    showSettings(Boolean(getToken()));
+    document.getElementById("settings-error").textContent = balance.error;
+    document.getElementById("settings-error").classList.remove("hidden");
+    return;
+  }
+  // Only NOW is it safe to copy a machine-local token into the mailbox: the
+  // service has confirmed the token is valid AND registered to this very
+  // mailbox. Migrating at startup copied whatever token sat on this machine
+  // into whichever mailbox happened to be open.
+  _migrateTokenToMailbox();
   await loadItemAttachments();
   maybeAutoSuggestReplyOptions();
 });
@@ -89,8 +107,16 @@ Office.onReady(async (info) => {
 // Present when READING a message and when FORWARDING one. Absent on Reply and
 // Reply All, because Outlook itself drops the attachments from those drafts;
 // see the note in attachments.js for why Office.js cannot go back for them.
+// Guarded so it runs ONCE per pane. It is called from startup AND from
+// onSaveToken, and re-opening settings to re-save a token used to append the
+// message's attachments a second time -- the chips doubled, and so did the
+// quote and the charge.
+let itemAttachmentsLoaded = false;
+
 async function loadItemAttachments() {
+  if (itemAttachmentsLoaded) return;
   if (!attachmentApiAvailable(currentItem)) return;
+  itemAttachmentsLoaded = true;
   let entries;
   try {
     entries = describeItemAttachments(await listItemAttachments(currentItem));
@@ -159,6 +185,11 @@ function _roamingTokenStore() {
 // forever and only new pastes would roam.
 function _migrateTokenToMailbox() {
   try {
+    // Only after the service has confirmed this token belongs to THIS
+    // mailbox. boundEmail comes from /balance, so a token for someone else's
+    // account is never written into this mailbox's roaming settings.
+    const here = _mailboxAddress().toLowerCase();
+    if (!here || !boundEmail || boundEmail.toLowerCase() !== here) return;
     const settings = Office.context.roamingSettings;
     if (!settings || typeof settings.get !== "function") return;
     if (settings.get(TOKEN_KEY)) return;                   // the mailbox already has one
@@ -261,6 +292,7 @@ function renderCoinBar(balance) {
     return;
   }
   if (balance.email) boundEmail = balance.email; // for the settings screen
+  if (typeof balance.coins_floor === "number") lastFloor = balance.coins_floor;
   const left = balance.coins_left;
   // The credit limit is shown ONLY once the balance is negative. Quoting it
   // to somebody comfortably in credit would advertise a wall they are
@@ -284,13 +316,22 @@ function updateCoinBarFromTurn(coins) {
   if (!coins || coins.left === null) return;
   const el = document.getElementById("coin-count");
   const resets = coins.resets ? " · resets " + _shortDate(coins.resets) : "";
-  el.textContent = coins.left + (coins.left === 1 ? " coin" : " coins") + resets;
+  // The limit is shown once the balance goes negative, exactly as
+  // renderCoinBar does. Without it the limit vanished the moment a turn
+  // completed -- which is precisely when a customer heading for the floor
+  // needs to see it. lastFloor is remembered from the last /balance, since
+  // the per-turn headers do not carry it.
+  const limit = typeof lastFloor === "number" && coins.left < 0
+    ? " · limit " + lastFloor
+    : "";
+  el.textContent = coins.left + (coins.left === 1 ? " coin" : " coins") + limit + resets;
   el.classList.toggle("negative", coins.left < 0);
 }
 
 async function refreshCoinBar() {
   const result = await fetchBalance();
   if (result.ok) renderCoinBar(result.balance);
+  return result;                                           // callers need the failure reason
 }
 
 // "2026-10-08" -> "8 Oct". Parsed as parts rather than through Date, which

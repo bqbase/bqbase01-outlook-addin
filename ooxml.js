@@ -233,6 +233,41 @@ function _elements(text, name) {
   return out;
 }
 
+// Removes whole <name>...</name> subtrees, contents included, in one linear
+// pass. Same scanning shape as _elements, so it cannot backtrack.
+function _removeElements(text, name) {
+  const open = "<" + name;
+  const close = "</" + name + ">";
+  const parts = [];
+  let pos = 0;
+  while (pos < text.length) {
+    const start = text.indexOf(open, pos);
+    if (start === -1) break;
+    // "<w:del" must not match "<w:delText", so the next character decides.
+    const after = text[start + open.length];
+    if (after !== undefined && !/[\s>/]/.test(after)) {
+      parts.push(text.slice(pos, start + open.length));
+      pos = start + open.length;
+      continue;
+    }
+    const tagEnd = text.indexOf(">", start);
+    if (tagEnd === -1) break;
+    parts.push(text.slice(pos, start));                    // everything before it stays
+    if (text[tagEnd - 1] === "/") {                        // self-closing: drop the tag
+      pos = tagEnd + 1;
+      continue;
+    }
+    const end = text.indexOf(close, tagEnd + 1);
+    if (end === -1) {                                      // unclosed: drop the tag only
+      pos = tagEnd + 1;
+      continue;
+    }
+    pos = end + close.length;                              // drop the whole subtree
+  }
+  parts.push(text.slice(pos));
+  return parts.join("");
+}
+
 // Strips XML tags in one linear pass. /<[^>]+>/g has the same quadratic
 // shape as the lazy scans above when the input carries many "<" and no ">",
 // so tag removal is done by hand too. An unterminated tag ends the document
@@ -297,7 +332,20 @@ function _xmlToText(xml, breakTags) {
 async function _extractDocx(bytes, entries, budget) {
   const xml = await _readText(bytes, entries, "word/document.xml", budget);
   if (!xml) throw new Error("no word/document.xml -- not a Word file");
-  return _xmlToText(xml, ["w:p"]);
+  // TRACKED DELETIONS ARE NOT DOCUMENT TEXT. Word stores removed text in
+  // <w:delText> inside <w:del>, as a sibling of the <w:ins> that replaced
+  // it, and stripping tags indiscriminately ran the two together:
+  // "Payment due within 30 days" edited to 90 came out as "Payment due
+  // within 3090 days", and a struck-out clause came out as binding text.
+  // Word's default Simple Markup view HIDES deletions, so the sender sees
+  // the clean document while the model is fed one that never existed --
+  // which for a contract is the reason this feature exists.
+  //
+  // <w:instrText> goes too: field instruction codes (HYPERLINK, MERGEFIELD)
+  // are machinery, not prose, and read as noise in the middle of a sentence.
+  let cleaned = _removeElements(xml, "w:del");
+  cleaned = _removeElements(cleaned, "w:instrText");
+  return _xmlToText(cleaned, ["w:p"]);
 }
 
 async function _extractPptx(bytes, entries, budget) {

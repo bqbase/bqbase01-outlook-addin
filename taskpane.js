@@ -16,11 +16,6 @@ let lastDraft = null; // last successful draft, enables INSERT
 let busy = false;
 let pendingAttachments = []; // Attachment[] from attachments.js
 let boundEmail = ""; // mailbox the service says this token belongs to
-// What the Worker said it charged for the LAST turn, from its response
-// header. Read after a failure to tell the customer whether retrying is
-// free -- the pane cannot infer that, because the Worker meters a teed copy
-// of the response and charges for an answer the pane may have failed to read.
-let lastCharged = 0;
 // The credit limit from the last /balance. The per-turn coin headers do not
 // carry it, so it is remembered here to keep the bar consistent between a
 // full refresh and a turn update.
@@ -618,28 +613,25 @@ async function onReviewAttachments() {
     // email again.
     pendingAttachments = ready.concat(pendingAttachments);
     renderAttachmentChips();
-    // WHAT WAS ACTUALLY CHARGED is asked of the service, not read off the
-    // response header. The Worker emits X-BQBase-Coins-Charged when it
-    // builds the response, but its meter runs afterwards on a teed copy and
-    // zeroes the charge for a refusal or an empty completion. Trusting the
-    // header told customers they had lost coins they still had, and warned
-    // them off a retry that was free.
-    const before = lastBalance;
+    // NO NUMBER IS CLAIMED for what the lost turn cost, because the pane
+    // cannot know it. Two attempts got this wrong: reading
+    // X-BQBase-Coins-Charged reported a charge the Worker's meter then
+    // refunded, and diffing the balance across a refresh blamed the review
+    // for every coin spent since the last /balance -- the per-turn header
+    // updates the bar but deliberately does not update that baseline. The
+    // charge is also applied asynchronously in waitUntil, so an immediate
+    // refresh can miss it entirely.
+    //
+    // So: refresh the counter, state it, and say plainly what a retry may
+    // cost. A number the customer can check beats a claim they cannot.
     await refreshCoinBar();
-    const spent = (typeof before === "number" && typeof lastBalance === "number")
-      ? before - lastBalance
-      : null;
-    if (spent === null) {
-      appendTurn("[system] The answer did not arrive. Check the coin count above" +
-        " before pressing Review again.", "error");
-    } else if (spent > 0) {
-      appendTurn("[system] That review was charged (" + spent +
-        (spent === 1 ? " coin" : " coins") + ") even though the answer did not" +
-        " arrive. Pressing Review again will charge again.", "error");
-    } else {
-      appendTurn("[system] Nothing was charged. The attachments are still listed" +
-        " -- press Review to try again.", "system");
-    }
+    const now = typeof lastBalance === "number"
+      ? " Your balance is now " + lastBalance + (lastBalance === 1 ? " coin." : " coins.")
+      : "";
+    appendTurn("[system] The answer did not arrive and the attachments are still" +
+      " listed." + now + " A review that reached the model is charged even when" +
+      " the answer is lost, so check the count before pressing Review again.",
+      "error");
   }
 }
 
@@ -767,7 +759,6 @@ async function dispatchTurn(text, isDraftCandidate, attachments, purpose) {
   setBusy(false);
   // Updated even when the turn FAILED: a refusal may itself be the reason
   // (a suspended account), and a stale counter is worse than none.
-  lastCharged = (result.coins && result.coins.charged) || 0;
   updateCoinBarFromTurn(result.coins);
 
   if (result.ok) {

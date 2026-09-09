@@ -33,6 +33,23 @@
 const _ZIP_EOCD = 0x06054b50;
 const _ZIP_CENTRAL = 0x02014b50;
 
+// An attachment is data from a stranger, so nothing about the archive is
+// trusted: not its sizes, not its offsets, not its entry count.
+//
+// The size caps matter most. MAX_ATTACHMENT_BYTES bounds the file at 20MB
+// COMPRESSED, which bounds the decompressed size not at all -- a deflate
+// stream of zeros expands about a thousandfold, so a 1MB attachment can
+// become a gigabyte and take the pane down with it. Inflation is therefore
+// aborted mid-stream at the cap rather than measured afterwards, which would
+// mean allocating the whole thing first.
+const MAX_INFLATED_BYTES = 64 * 1024 * 1024;   // one part, e.g. a big sheet's XML
+const MAX_TOTAL_INFLATED = 128 * 1024 * 1024;  // everything read from one archive
+const MAX_ENTRIES = 5000;                      // a real .pptx has dozens
+// Past this the file is REFUSED, not truncated. A silently shortened
+// contract is worse than a clear refusal: the review would read as complete
+// while missing whatever came after the cut.
+const MAX_EXTRACTED_CHARS = 2 * 1000 * 1000;
+
 function _findEocd(view) {
   // The end-of-central-directory record sits at the very end unless the file
   // carries a trailing comment, so it is searched for backwards. 22 is its
@@ -51,10 +68,15 @@ function _readDirectory(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const eocd = _findEocd(view);
   if (eocd === -1) throw new Error("not a ZIP archive (no end-of-directory record)");
-  const count = view.getUint16(eocd + 10, true);
+  const count = Math.min(view.getUint16(eocd + 10, true), MAX_ENTRIES);
   let pointer = view.getUint32(eocd + 16, true);
   const entries = new Map();
   for (let i = 0; i < count; i++) {
+    // Every read below is bounds-checked BEFORE it happens. A DataView throws
+    // on an out-of-range read, which would be caught upstream and reported as
+    // an unreadable file -- but a truncated or hostile archive should be
+    // named as such rather than surfacing as a stray RangeError.
+    if (pointer < 0 || pointer + 46 > bytes.length) break;
     if (view.getUint32(pointer, true) !== _ZIP_CENTRAL) break;
     const method = view.getUint16(pointer + 10, true);
     const compressedSize = view.getUint32(pointer + 20, true);
@@ -62,15 +84,53 @@ function _readDirectory(bytes) {
     const extraLength = view.getUint16(pointer + 30, true);
     const commentLength = view.getUint16(pointer + 32, true);
     const localOffset = view.getUint32(pointer + 42, true);
+    if (pointer + 46 + nameLength > bytes.length) break;
     const name = new TextDecoder("utf-8").decode(
       bytes.subarray(pointer + 46, pointer + 46 + nameLength));
-    entries.set(name, { localOffset, compressedSize, method });
+    // An entry pointing outside the file is either corruption or an attempt
+    // to make the reader read something else. Skipped, not fatal: the rest of
+    // the archive may still hold the part that is wanted.
+    if (localOffset >= 0 && localOffset + 30 <= bytes.length) {
+      entries.set(name, { localOffset, compressedSize, method });
+    }
     pointer += 46 + nameLength + extraLength + commentLength;
   }
   return entries;
 }
 
-async function _readEntry(bytes, entry) {
+// Inflates one entry, ABORTING as soon as the output passes the cap rather
+// than after allocating all of it. The counter is shared across an archive so
+// many small bombs cost no more than one big one.
+async function _inflate(raw, budget) {
+  const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      budget.used += value.length;
+      if (total > MAX_INFLATED_BYTES || budget.used > MAX_TOTAL_INFLATED) {
+        await reader.cancel();
+        throw new Error("this file expands to far more than it claims and was not read");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+async function _readEntry(bytes, entry, budget) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // The local header repeats the name and extra fields, and its extra length
   // often DIFFERS from the central directory's -- so the data offset has to
@@ -78,17 +138,24 @@ async function _readEntry(bytes, entry) {
   const nameLength = view.getUint16(entry.localOffset + 26, true);
   const extraLength = view.getUint16(entry.localOffset + 28, true);
   const start = entry.localOffset + 30 + nameLength + extraLength;
-  const raw = bytes.subarray(start, start + entry.compressedSize);
-  if (entry.method === 0) return raw;                      // stored, not compressed
+  // Clamped rather than trusted: compressedSize comes from the archive, so a
+  // hostile one can claim an entry runs past the end of the file.
+  const end = Math.min(start + entry.compressedSize, bytes.length);
+  if (start >= bytes.length || end <= start) return new Uint8Array(0);
+  const raw = bytes.subarray(start, end);
+  if (entry.method === 0) {                                // stored, not compressed
+    budget.used += raw.length;
+    if (budget.used > MAX_TOTAL_INFLATED) throw new Error("archive is too large to read");
+    return raw;
+  }
   if (entry.method !== 8) throw new Error("unsupported ZIP compression method " + entry.method);
-  const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  return _inflate(raw, budget);
 }
 
-async function _readText(bytes, entries, name) {
+async function _readText(bytes, entries, name, budget) {
   const entry = entries.get(name);
   if (!entry) return "";
-  return new TextDecoder("utf-8").decode(await _readEntry(bytes, entry));
+  return new TextDecoder("utf-8").decode(await _readEntry(bytes, entry, budget));
 }
 
 // ---- XML ----------------------------------------------------------------
@@ -121,13 +188,13 @@ function _xmlToText(xml, breakTags) {
 
 // ---- the three formats --------------------------------------------------
 
-async function _extractDocx(bytes, entries) {
-  const xml = await _readText(bytes, entries, "word/document.xml");
+async function _extractDocx(bytes, entries, budget) {
+  const xml = await _readText(bytes, entries, "word/document.xml", budget);
   if (!xml) throw new Error("no word/document.xml -- not a Word file");
   return _xmlToText(xml, ["w:p"]);
 }
 
-async function _extractPptx(bytes, entries) {
+async function _extractPptx(bytes, entries, budget) {
   // Slide parts are named slide1.xml, slide2.xml ... and sort WRONGLY as
   // text once past nine, so they are ordered by their number.
   const slides = [...entries.keys()]
@@ -135,17 +202,17 @@ async function _extractPptx(bytes, entries) {
     .sort((a, b) => Number(a.match(/(\d+)/)[1]) - Number(b.match(/(\d+)/)[1]));
   const parts = [];
   for (let i = 0; i < slides.length; i++) {
-    const text = _xmlToText(await _readText(bytes, entries, slides[i]), ["a:p"]);
+    const text = _xmlToText(await _readText(bytes, entries, slides[i], budget), ["a:p"]);
     if (text) parts.push("--- Slide " + (i + 1) + " ---\n" + text);
   }
   if (parts.length === 0) throw new Error("no slides found -- not a PowerPoint file");
   return parts.join("\n\n");
 }
 
-async function _extractXlsx(bytes, entries) {
+async function _extractXlsx(bytes, entries, budget) {
   // Cell text is stored ONCE in a shared table and referenced by index, so
   // that table has to be read before any sheet makes sense.
-  const sharedXml = await _readText(bytes, entries, "xl/sharedStrings.xml");
+  const sharedXml = await _readText(bytes, entries, "xl/sharedStrings.xml", budget);
   const shared = [];
   for (const si of sharedXml.match(/<si>[\s\S]*?<\/si>/g) || []) {
     shared.push(_decodeEntities(si.replace(/<[^>]+>/g, "")));
@@ -155,7 +222,7 @@ async function _extractXlsx(bytes, entries) {
   // files. Pairing them properly means resolving relationship ids; the names
   // are only a label here, so they are matched in document order and fall
   // back to "Sheet N" whenever the counts disagree.
-  const workbook = await _readText(bytes, entries, "xl/workbook.xml");
+  const workbook = await _readText(bytes, entries, "xl/workbook.xml", budget);
   const names = [...workbook.matchAll(/<sheet[^>]*name="([^"]*)"/g)].map((m) => _decodeEntities(m[1]));
 
   const sheets = [...entries.keys()]
@@ -164,7 +231,7 @@ async function _extractXlsx(bytes, entries) {
 
   const parts = [];
   for (let i = 0; i < sheets.length; i++) {
-    const xml = await _readText(bytes, entries, sheets[i]);
+    const xml = await _readText(bytes, entries, sheets[i], budget);
     const rows = [];
     for (const row of xml.match(/<row[\s\S]*?<\/row>/g) || []) {
       const cells = [];
@@ -208,8 +275,24 @@ async function extractOfficeText(bytes, category) {
     throw new Error("this version of Outlook cannot open Office files in the pane");
   }
   const entries = _readDirectory(bytes);
-  if (category === "docx") return _extractDocx(bytes, entries);
-  if (category === "xlsx") return _extractXlsx(bytes, entries);
-  if (category === "pptx") return _extractPptx(bytes, entries);
-  throw new Error("unsupported Office format: " + category);
+  // One shared budget for the whole archive, so many small bombs cost no more
+  // than one big one.
+  const budget = { used: 0 };
+  let text;
+  if (category === "docx") text = await _extractDocx(bytes, entries, budget);
+  else if (category === "xlsx") text = await _extractXlsx(bytes, entries, budget);
+  else if (category === "pptx") text = await _extractPptx(bytes, entries, budget);
+  else throw new Error("unsupported Office format: " + category);
+
+  // REFUSED rather than truncated. A shortened contract would be reviewed as
+  // though it were complete, and the reader would have no way to tell -- the
+  // same reason the .txt truncation limit was removed. It also keeps the
+  // request under the Worker's 30MB body cap, which extracted text could
+  // otherwise blow through AFTER the customer had agreed a price.
+  if (text.length > MAX_EXTRACTED_CHARS) {
+    throw new Error("this document holds about " +
+      Math.round(text.length / 1800) + " pages of text, too much to review in one go" +
+      " -- send the relevant section instead");
+  }
+  return text;
 }

@@ -31,6 +31,11 @@ Office.onReady(async (info) => {
   // call that omits the address cannot be checked against it.
   setMailbox(_mailboxAddress());
 
+  // Before the first getToken(), or startup reads only this machine's copy
+  // and sends a returning customer back to the settings screen.
+  setTokenStore(_roamingTokenStore());
+  _migrateTokenToMailbox();
+
   document.getElementById("screen-loading").classList.add("hidden");
 
   document.getElementById("insertBtn").addEventListener("click", onInsert);
@@ -118,6 +123,51 @@ async function loadItemAttachments() {
       setAttachEstimatePending(false);
       renderAttachmentChips();
     }
+  }
+}
+
+// A token store backed by the MAILBOX rather than by this machine, so one
+// paste covers the desktop, the laptop and Outlook on the web.
+//
+// RoamingSettings is Mailbox 1.1, well under the 1.5 this add-in declares,
+// but it is still feature-detected: a host that lacks it must fall back to
+// localStorage rather than throw on startup.
+function _roamingTokenStore() {
+  try {
+    const settings = Office.context.roamingSettings;
+    if (!settings || typeof settings.get !== "function" ||
+        typeof settings.set !== "function" || typeof settings.saveAsync !== "function") {
+      return null;
+    }
+    return {
+      load: () => settings.get(TOKEN_KEY) || "",
+      save: (value) => {
+        settings.set(TOKEN_KEY, value);
+        // Fire and forget: the local copy has already been written, so a
+        // failed save costs the customer one extra paste on their NEXT
+        // device, not the use of the add-in here and now.
+        settings.saveAsync(() => {});
+      },
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+// Carries a token already pasted on THIS machine up to the mailbox, once.
+// Without it, an existing customer would keep the per-machine behaviour
+// forever and only new pastes would roam.
+function _migrateTokenToMailbox() {
+  try {
+    const settings = Office.context.roamingSettings;
+    if (!settings || typeof settings.get !== "function") return;
+    if (settings.get(TOKEN_KEY)) return;                   // the mailbox already has one
+    const local = localStorage.getItem(TOKEN_KEY);
+    if (!local) return;
+    settings.set(TOKEN_KEY, local);
+    settings.saveAsync(() => {});
+  } catch (err) {
+    // Nothing to do -- the local copy still works on this machine.
   }
 }
 

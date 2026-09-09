@@ -46,13 +46,40 @@ const PROXY_URL = "https://bqbase-openrouter-proxy.bqbase.workers.dev";
 const REQUEST_MODEL = "openai/gpt-5.6-luna";
 const REASONING_EFFORT = "medium";
 
-// The customer's access token, kept on this machine only. localStorage rather
-// than roaming settings deliberately: it is a credential, and Office's
-// RoamingSettings would sync it to the mailbox where other clients could read
-// it.
+// The customer's access token.
+//
+// TWO stores, because they fail differently. localStorage is per machine and
+// per client, so a customer had to paste the token on their desktop, their
+// laptop and again in Outlook on the web. The optional store below is backed
+// by the MAILBOX, so one paste follows them everywhere.
+//
+// Keeping a credential in the mailbox was avoided at first, on the grounds
+// that other add-ins in that mailbox could read it. That reasoning is weaker
+// now the token is registered to one mailbox: anything with enough access to
+// read it is already inside the only account it can spend. Weighed against
+// making the customer paste a 51-character string three times, the mailbox
+// wins -- and localStorage remains as the fallback where roaming is absent.
 const TOKEN_KEY = "bqbase_token";
 
+// Supplied by the host at startup (see taskpane.js). Null on any client that
+// cannot offer one, which simply leaves the localStorage behaviour intact.
+let tokenStore = null;
+
+function setTokenStore(store) {
+  tokenStore = store;
+}
+
 function getToken() {
+  // The mailbox is authoritative: it is the thing the subscription belongs
+  // to, so a token found there beats a stale one left on this machine.
+  if (tokenStore) {
+    try {
+      const roamed = tokenStore.load();
+      if (roamed) return roamed;
+    } catch (err) {
+      // fall through to the local copy
+    }
+  }
   try {
     return localStorage.getItem(TOKEN_KEY) || "";
   } catch (err) {
@@ -60,13 +87,26 @@ function getToken() {
   }
 }
 
+// Written to BOTH, so a host that later loses one still has the other, and
+// so a customer who has already pasted the token on this machine gets it
+// carried up to the mailbox without doing anything.
 function setToken(value) {
+  let stored = false;
   try {
     localStorage.setItem(TOKEN_KEY, value);
-    return true;
+    stored = true;
   } catch (err) {
-    return false;
+    // no local copy; the mailbox may still take it
   }
+  if (tokenStore) {
+    try {
+      tokenStore.save(value);
+      stored = true;
+    } catch (err) {
+      // no roaming copy; the local one may have worked
+    }
+  }
+  return stored;
 }
 
 // The signed-in mailbox, which is what the subscription is tied to. Set once

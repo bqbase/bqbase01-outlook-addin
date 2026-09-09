@@ -296,6 +296,12 @@ const COINS_PER_IMAGE = 2;
 const COINS_PER_MB_PDF = 3;
 const TEXT_CHARS_PER_COIN = 20000;
 
+// Marks a text block as coming from an ATTACHMENT rather than from the
+// customer's own typing. The Worker bills only blocks carrying it, so the
+// instruction the pane sends alongside the files ("Review the attached
+// document...") is not charged for. Both sides must agree on this string.
+const ATTACHED_TEXT_MARKER = "[Attached file: ";
+
 function estimateCoins(attachments) {
   let fileBytes = 0;
   let images = 0;
@@ -305,6 +311,11 @@ function estimateCoins(attachments) {
     if (att.category === "image") images += 1;
     else if (att.category === "pdf") fileBytes += att.bytes || 0;
     else if (att.category === "txt") {
+      // Counts the string as it will actually be SENT, prefix included: the
+      // message builder below wraps every extracted file in the marker plus
+      // its filename, and the Worker charges on what it receives. Counting
+      // the bare text here would quote low by the length of that prefix.
+      const prefix = ATTACHED_TEXT_MARKER + att.filename + "]\n";
       // A dropped file has been read already, so its exact character count is
       // known. One still ON the message has not -- quoting it would mean
       // fetching every file just to price it, and the price has to appear the
@@ -312,9 +323,9 @@ function estimateCoins(attachments) {
       // always >= the character count the Worker charges on. So this can only
       // ever quote HIGH, never low: the customer is never charged more than
       // the number they pressed the button on.
-      textChars += att.extractedText !== undefined
+      textChars += prefix.length + (att.extractedText !== undefined
         ? att.extractedText.length
-        : (att.bytes || 0);
+        : (att.bytes || 0));
     } else if (att.extractedText !== undefined) {
       textChars += att.extractedText.length;
     }
@@ -338,7 +349,7 @@ function buildMessageContent(userText, attachments) {
   const blocks = [];
   for (const a of ok) {
     if (a.extractedText !== undefined) {
-      blocks.push({ type: "text", text: "[Attached file: " + a.filename + "]\n" + a.extractedText });
+      blocks.push({ type: "text", text: ATTACHED_TEXT_MARKER + a.filename + "]\n" + a.extractedText });
     }
   }
   for (const a of ok) {

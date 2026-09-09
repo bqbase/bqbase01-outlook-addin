@@ -343,7 +343,15 @@ async function _extractDocx(bytes, entries, budget) {
   //
   // <w:instrText> goes too: field instruction codes (HYPERLINK, MERGEFIELD)
   // are machinery, not prose, and read as noise in the middle of a sentence.
+  //
+  // A tracked MOVE is not a delete plus an insert: Word writes a matched
+  // <w:moveFrom>/<w:moveTo> pair, and the moveFrom source survives a w:del
+  // sweep untouched. Left in, a clause dragged from one section to another
+  // appears TWICE -- once where it no longer belongs -- while Word shows it
+  // once. <w:moveTo> is kept, exactly as <w:ins> is: that is where the text
+  // now lives.
   let cleaned = _removeElements(xml, "w:del");
+  cleaned = _removeElements(cleaned, "w:moveFrom");
   cleaned = _removeElements(cleaned, "w:instrText");
   return _xmlToText(cleaned, ["w:p"]);
 }

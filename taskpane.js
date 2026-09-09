@@ -624,10 +624,15 @@ async function onReviewAttachments() {
     //
     // So: refresh the counter, state it, and say plainly what a retry may
     // cost. A number the customer can check beats a claim they cannot.
-    await refreshCoinBar();
-    const now = typeof lastBalance === "number"
+    // The refresh's OWN result decides whether a number may be quoted. It
+    // fails on exactly the network drop that killed the turn, and
+    // lastBalance is only ever written by a SUCCESSFUL /balance -- so
+    // quoting it regardless announced a figure from several charged turns
+    // ago as "now", in the same sentence that told the customer to check it.
+    const refreshed = await refreshCoinBar();
+    const now = refreshed.ok && typeof lastBalance === "number"
       ? " Your balance is now " + lastBalance + (lastBalance === 1 ? " coin." : " coins.")
-      : "";
+      : " The coin count could not be refreshed, so reopen the pane to see it.";
     appendTurn("[system] The answer did not arrive and the attachments are still" +
       " listed." + now + " A review that reached the model is charged even when" +
       " the answer is lost, so check the count before pressing Review again.",

@@ -64,8 +64,31 @@ Office.onReady(async (info) => {
   }
   showChatScreen();
   await refreshCoinBar();
+  await loadItemAttachments();
   maybeAutoSuggestReplyOptions();
 });
+
+// Puts the open message's own attachments in front of the customer as a
+// priced button. NOT reviewed automatically -- that would spend coins nobody
+// asked to spend, and the whole point of the button is that the price is
+// agreed before anything is charged.
+//
+// Present when READING a message and when FORWARDING one. Absent on Reply and
+// Reply All, because Outlook itself drops the attachments from those drafts;
+// see the note in attachments.js for why Office.js cannot go back for them.
+async function loadItemAttachments() {
+  if (!attachmentApiAvailable(currentItem)) return;
+  let entries;
+  try {
+    entries = describeItemAttachments(await listItemAttachments(currentItem));
+  } catch (err) {
+    return; // an unreadable attachment list must not stop the pane loading
+  }
+  if (entries.length === 0) return;
+  const room = MAX_ATTACHMENTS_PER_MESSAGE - pendingAttachments.length;
+  pendingAttachments = pendingAttachments.concat(entries.slice(0, Math.max(0, room)));
+  renderAttachmentChips();
+}
 
 // The SIGNED-IN USER's address, which is deliberately not "the mailbox
 // currently open": on a shared or delegated mailbox userProfile reports the
@@ -324,9 +347,33 @@ async function onReviewAttachments() {
   inputBox.value = "";
   pendingAttachments = [];
   renderAttachmentChips();
+
+  // Files already on the message arrive as metadata only -- their bytes are
+  // fetched here, AFTER the price has been quoted and agreed. Dropped files
+  // were read when they were dropped and pass through untouched.
+  setBusy(true);
+  for (const entry of usable) {
+    await fetchItemAttachment(currentItem, entry);
+  }
+  setBusy(false);
+
+  // Office refuses to release some attachments, and it says so only now. A
+  // file that failed is NOT sent, so the Worker never sees it and never
+  // charges for it -- the customer pays less than the quote, never more.
+  const ready = usable.filter((a) => !a.error);
+  const failed = usable.filter((a) => a.error);
+  if (failed.length) {
+    appendTurn("Could not read: " +
+      failed.map((a) => a.filename + " -- " + a.error).join("; "), "error");
+  }
+  if (ready.length === 0) {
+    appendTurn("Nothing was reviewed, so no coins were used.", "error");
+    return;
+  }
+
   await dispatchTurn(
     text || "Review the attached document and tell me what matters for my reply.",
-    true, usable, "attachment"
+    true, ready, "attachment"
   );
 }
 

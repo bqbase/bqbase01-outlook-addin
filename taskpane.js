@@ -25,6 +25,10 @@ let lastCharged = 0;
 // carry it, so it is remembered here to keep the bar consistent between a
 // full refresh and a turn update.
 let lastFloor = null;
+// The balance as the SERVICE last reported it. Only /balance writes this,
+// never the per-turn header -- the header carries the charge the Worker
+// intended before its meter decided whether to refund it.
+let lastBalance = null;
 
 Office.onReady(async (info) => {
   if (info.host !== Office.HostType.Outlook) return;
@@ -67,8 +71,12 @@ Office.onReady(async (info) => {
 
   document.getElementById("settingsBtn").addEventListener("click", () => showSettings(true));
   document.getElementById("saveTokenBtn").addEventListener("click", onSaveToken);
-  document.getElementById("cancelTokenBtn").addEventListener("click", () => {
+  document.getElementById("cancelTokenBtn").addEventListener("click", async () => {
     showChatScreen();
+    // Startup skips this when /balance fails, so backing out of the settings
+    // screen is the customer's only route to it. Without this a transient
+    // network blip removed the priced attachment row for the whole session.
+    await loadItemAttachments();
   });
   document.getElementById("reviewAttachBtn").addEventListener("click", onReviewAttachments);
 
@@ -116,13 +124,17 @@ let itemAttachmentsLoaded = false;
 async function loadItemAttachments() {
   if (itemAttachmentsLoaded) return;
   if (!attachmentApiAvailable(currentItem)) return;
-  itemAttachmentsLoaded = true;
   let entries;
   try {
     entries = describeItemAttachments(await listItemAttachments(currentItem));
   } catch (err) {
     return; // an unreadable attachment list must not stop the pane loading
   }
+  // Set only once the list is actually in hand. Setting it before the try
+  // meant one throw disabled the priced attachment path for the whole
+  // session, with no way back -- including from the Cancel path that exists
+  // precisely to recover from a failed start.
+  itemAttachmentsLoaded = true;
   if (entries.length === 0) return;
   const room = MAX_ATTACHMENTS_PER_MESSAGE - pendingAttachments.length;
   const taken = entries.slice(0, Math.max(0, room));
@@ -293,6 +305,7 @@ function renderCoinBar(balance) {
   }
   if (balance.email) boundEmail = balance.email; // for the settings screen
   if (typeof balance.coins_floor === "number") lastFloor = balance.coins_floor;
+  lastBalance = balance.coins_left;
   const left = balance.coins_left;
   // The credit limit is shown ONLY once the balance is negative. Quoting it
   // to somebody comfortably in credit would advertise a wall they are
@@ -375,10 +388,11 @@ function appendTurn(text, cssClass) {
 function setBusy(isBusy) {
   busy = isBusy;
   document.getElementById("input-box").disabled = isBusy;
-  // NOT a plain assignment: the Review button is also disabled while Office
-  // documents are being read for pricing, and clearing busy must not
-  // re-enable it mid-extraction with a price that is not final yet.
-  document.getElementById("reviewAttachBtn").disabled = isBusy || attachEstimatePending;
+  // Routed through renderAttachRow rather than assigned here, so every
+  // reason the button should stay disabled is applied in ONE place: busy,
+  // an extraction still running, and nothing ticked. Assigning it directly
+  // re-enabled a button that had been disabled because no file was selected.
+  renderAttachRow();
 }
 
 // -- attachments -------------------------------------------------------
@@ -601,25 +615,31 @@ async function onReviewAttachments() {
   );
   if (!ok) {
     // The files go back in the row rather than making the customer find the
-    // email again -- but WHETHER A RETRY IS FREE depends on something the
-    // pane cannot assume. The Worker meters a teed copy of the response, so
-    // a turn the model answered is charged even if the pane's own read of
-    // the stream then failed. lastCharged is the Worker's own figure, sent
-    // on a header that arrives with the response head, before any stream
-    // error. Saying "try again" unconditionally invited a second charge for
-    // a review already paid for.
+    // email again.
     pendingAttachments = ready.concat(pendingAttachments);
     renderAttachmentChips();
-    appendTurn(lastCharged > 0
-      ? "[system] That review was already charged (" + lastCharged +
-        (lastCharged === 1 ? " coin" : " coins") +
-        ") even though the answer did not arrive. Pressing Review again will charge again."
-      : "[system] Nothing was charged. The attachments are still listed -- press Review to try again.",
-      lastCharged > 0 ? "error" : "system");
-    // The header reports the charge BEFORE the Worker's meter decides
-    // whether to refund it, so the counter is re-read from the service
-    // rather than trusted.
+    // WHAT WAS ACTUALLY CHARGED is asked of the service, not read off the
+    // response header. The Worker emits X-BQBase-Coins-Charged when it
+    // builds the response, but its meter runs afterwards on a teed copy and
+    // zeroes the charge for a refusal or an empty completion. Trusting the
+    // header told customers they had lost coins they still had, and warned
+    // them off a retry that was free.
+    const before = lastBalance;
     await refreshCoinBar();
+    const spent = (typeof before === "number" && typeof lastBalance === "number")
+      ? before - lastBalance
+      : null;
+    if (spent === null) {
+      appendTurn("[system] The answer did not arrive. Check the coin count above" +
+        " before pressing Review again.", "error");
+    } else if (spent > 0) {
+      appendTurn("[system] That review was charged (" + spent +
+        (spent === 1 ? " coin" : " coins") + ") even though the answer did not" +
+        " arrive. Pressing Review again will charge again.", "error");
+    } else {
+      appendTurn("[system] Nothing was charged. The attachments are still listed" +
+        " -- press Review to try again.", "system");
+    }
   }
 }
 
@@ -637,8 +657,15 @@ const REVIEW_THEN_OPTIONS_PROMPT =
 // implemented -- see mail-context.js's header. This suggests reply angles
 // from plain text context only. Manually drag-and-dropped files (this
 // file's own addFiles/attachments.js) are a separate, supported feature.
+let autoSuggested = false;
+
 async function maybeAutoSuggestReplyOptions() {
   if (!isReplyOrForward(currentItem)) return;
+  // Once per pane. Startup and onSaveToken both call this and are not
+  // concurrent, so the busy guard below does not stop a second, duplicate
+  // set of suggestions being generated after a token is saved.
+  if (autoSuggested) return;
+  autoSuggested = true;
   // Guarded like every other entry point. Saving a token calls this while
   // the pane's own startup may already have a turn in flight, and two
   // concurrent dispatchTurn calls interleave their pushes into `history`
@@ -760,9 +787,17 @@ async function dispatchTurn(text, isDraftCandidate, attachments, purpose) {
       // correctly stripped them from the compose body. A no-op if the
       // model's reply didn't use the contract -- parseDraft then returns
       // the text unchanged.
-      const { proposedSubject, body } = parseDraft(result.text);
+      const { proposedSubject, body, remarks } = parseDraft(result.text);
       if (proposedSubject !== null || body !== result.text) {
         displayText = proposedSubject ? "Subject: " + proposedSubject + "\n\n" + body : body;
+        // The model's own remarks are KEPT, separated from the draft. The
+        // system prompt reserves the space after <<<END EMAIL>>> for exactly
+        // this, and dropping it made that channel write-only: a model saying
+        // "you wrote 'next Tuesday'; I assumed the 12th, confirm before
+        // sending" was talking to nobody, and the customer could send a
+        // reply agreeing to the wrong date having never seen the question.
+        // Display only -- Insert and Reply re-parse and take the body alone.
+        if (remarks) displayText += "\n\n--\n" + remarks;
       }
     }
     renderAssistantTurn(assistantDiv, displayText);

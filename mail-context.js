@@ -153,10 +153,24 @@ async function describeContext(item) {
 const DRAFT_PATTERN = /^SUBJECT:\s*(.*?)\s*\r?\n\r?\n([\s\S]*?)(?:\r?\n<<<END EMAIL>>>|$)/i;
 const NO_CHANGE_SUBJECTS = new Set(["", "(no change)", "no change"]);
 
+// Also returns REMARKS: anything the model wrote after <<<END EMAIL>>>.
+//
+// The system prompt above reserves that space for exactly this -- "Only
+// write remarks, questions, or explanations for the user AFTER the
+// <<<END EMAIL>>> line" -- and the transcript used to drop it, because only
+// the body was returned. A model doing as it was told ("you wrote 'next
+// Tuesday'; I assumed the 12th, confirm before sending") was talking into a
+// channel nobody could read. Remarks are for DISPLAY only and never go into
+// the email: insert.js and replyWithDraft take body alone.
 function parseDraft(rawText) {
-  const match = DRAFT_PATTERN.exec(rawText.trim());
-  if (!match) return { proposedSubject: null, body: rawText };
+  const trimmed = rawText.trim();
+  const match = DRAFT_PATTERN.exec(trimmed);
+  if (!match) return { proposedSubject: null, body: rawText, remarks: "" };
   const subject = match[1].trim();
   const proposedSubject = NO_CHANGE_SUBJECTS.has(subject.toLowerCase()) ? null : subject;
-  return { proposedSubject, body: match[2].trim() };
+  const marker = trimmed.indexOf("<<<END EMAIL>>>");
+  const remarks = marker === -1
+    ? ""
+    : trimmed.slice(marker + "<<<END EMAIL>>>".length).trim();
+  return { proposedSubject, body: match[2].trim(), remarks };
 }

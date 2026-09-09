@@ -360,9 +360,13 @@ async function _extractXlsx(bytes, entries, budget) {
         const held = _elements(cell, "v");
         const value = held.length ? _stripTags(held[0]) : undefined;
         if (type === "s") {
-          // Number() on an attacker's index can be NaN or out of range; an
-          // absent entry becomes an empty cell rather than "undefined".
-          cells.push(shared[Number(value)] || "");
+          // An EMPTY <v> is an empty cell, not index 0 -- Number("") is 0,
+          // so a blank shared-string cell used to print whatever text
+          // happened to sit first in the shared table. An index that is
+          // absent, NaN or out of range is likewise an empty cell rather
+          // than "undefined".
+          const index = value === undefined || value === "" ? -1 : Number(value);
+          cells.push(Number.isInteger(index) && index >= 0 ? (shared[index] || "") : "");
         } else if (type === "inlineStr") {
           cells.push(_decodeEntities(_stripTags(cell)));
         } else {

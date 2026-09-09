@@ -69,6 +69,30 @@ function setToken(value) {
   }
 }
 
+// The signed-in mailbox, which is what the subscription is tied to. Set once
+// by taskpane.js at startup and sent with every call, so the same token used
+// on a desktop, a laptop and Outlook on the web is one account -- and so a
+// token forwarded to a colleague is refused in their mailbox.
+//
+// NOT read from Office.context here on purpose: this file is the transport
+// layer and knows nothing about the host, which is what let the upstream
+// provider change without touching it.
+let mailboxAddress = "";
+
+function setMailbox(address) {
+  mailboxAddress = String(address || "").trim();
+}
+
+// Every request that carries the token carries the mailbox with it, so the
+// two are never checked apart.
+function authHeaders() {
+  const headers = {};
+  const token = getToken();
+  if (token) headers["X-BQBase-Token"] = token;
+  if (mailboxAddress) headers["X-BQBase-Mailbox"] = mailboxAddress;
+  return headers;
+}
+
 // Asks the Worker what this token is worth. Returns {ok, balance} or
 // {ok:false, error} -- never throws, same contract as everything else here.
 async function fetchBalance() {
@@ -78,7 +102,7 @@ async function fetchBalance() {
   try {
     response = await fetch(PROXY_URL + "/balance", {
       method: "GET",
-      headers: { "X-BQBase-Token": token },
+      headers: authHeaders(),
     });
   } catch (err) {
     return { ok: false, error: "Could not reach the assistant service." };
@@ -99,11 +123,9 @@ async function fetchBalance() {
 // this only declares the kind.
 async function sendTurnStreaming(systemPrompt, history, onDelta, purpose) {
   const messages = [{ role: "system", content: systemPrompt }].concat(history);
-  const token = getToken();
   let response;
   try {
-    const headers = { "Content-Type": "application/json" };
-    if (token) headers["X-BQBase-Token"] = token;
+    const headers = Object.assign({ "Content-Type": "application/json" }, authHeaders());
     response = await fetch(PROXY_URL, {
       method: "POST",
       headers: headers,

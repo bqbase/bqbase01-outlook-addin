@@ -15,10 +15,16 @@ let history = []; // [{role, content}]
 let lastDraft = null; // last successful draft, enables INSERT
 let busy = false;
 let pendingAttachments = []; // Attachment[] from attachments.js
+let boundEmail = ""; // mailbox the service says this token belongs to
 
 Office.onReady(async (info) => {
   if (info.host !== Office.HostType.Outlook) return;
   currentItem = Office.context.mailbox.item;
+
+  // Must happen before ANY call to the service, including the token check on
+  // the settings screen: the subscription is tied to this mailbox, and a call
+  // that omits the address cannot bind a fresh token to it.
+  setMailbox(_mailboxAddress());
 
   document.getElementById("screen-loading").classList.add("hidden");
 
@@ -61,6 +67,21 @@ Office.onReady(async (info) => {
   maybeAutoSuggestReplyOptions();
 });
 
+// The SIGNED-IN USER's address, which is deliberately not "the mailbox
+// currently open": on a shared or delegated mailbox userProfile reports the
+// person, and the licence should follow the person who bought it.
+//
+// Wrapped because it is absent on some hosts. Empty means the Worker cannot
+// check the binding and lets the call through on the token alone.
+function _mailboxAddress() {
+  try {
+    const profile = Office.context.mailbox.userProfile;
+    return (profile && profile.emailAddress) || "";
+  } catch (err) {
+    return "";
+  }
+}
+
 // -- settings ------------------------------------------------------------
 
 // canCancel is false on first run: there is no chat screen to go back to yet.
@@ -70,6 +91,23 @@ function showSettings(canCancel) {
   document.getElementById("token-input").value = getToken();
   document.getElementById("settings-error").classList.add("hidden");
   document.getElementById("cancelTokenBtn").classList.toggle("hidden", !canCancel);
+  renderMailboxLine();
+}
+
+// Which mailbox this pane is signed in as, and -- once the service has
+// answered -- which mailbox the token is registered to. The two differ only
+// when a token has been pasted into the wrong account, which is worth showing
+// here rather than leaving the customer to discover it as a refusal later.
+function renderMailboxLine() {
+  const el = document.getElementById("settings-mailbox");
+  const here = _mailboxAddress();
+  const parts = [];
+  if (here) parts.push("This mailbox: " + here);
+  if (boundEmail && boundEmail.toLowerCase() !== here.toLowerCase()) {
+    parts.push("Token registered to: " + boundEmail);
+  }
+  el.textContent = parts.join(" · ");
+  el.classList.toggle("hidden", parts.length === 0);
 }
 
 // The token is VERIFIED against the service before it is accepted, so a typo
@@ -112,6 +150,7 @@ function renderCoinBar(balance) {
     el.textContent = "";
     return;
   }
+  if (balance.email) boundEmail = balance.email; // for the settings screen
   const left = balance.coins_left;
   el.textContent = left + (left === 1 ? " coin" : " coins") +
     " · resets " + _shortDate(balance.resets_at);

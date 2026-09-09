@@ -19,9 +19,12 @@
       <p class="settings-title">Access token</p>
       <p class="hint">
         Paste the token you were given. It is stored on this computer only
-        and is not sent anywhere except to the assistant service.
+        and is not sent anywhere except to the assistant service. Your
+        subscription covers one mailbox, so paste the same token on every
+        computer where you use that mailbox.
       </p>
       <input id="token-input" type="text" placeholder="bq_..." autocomplete="off" />
+      <p id="settings-mailbox" class="hint hidden"></p>
       <div id="settings-error" class="settings-error hidden"></div>
       <div class="action-row">
         <button id="saveTokenBtn" class="primary" type="button">Save</button>

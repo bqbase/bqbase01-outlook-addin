@@ -212,9 +212,20 @@ function renderCoinBar(balance) {
   }
   if (balance.email) boundEmail = balance.email; // for the settings screen
   const left = balance.coins_left;
+  // The credit limit is shown ONLY once the balance is negative. Quoting it
+  // to somebody comfortably in credit would advertise a wall they are
+  // nowhere near; quoting it to somebody overdrawn is the one moment it
+  // matters, because they can still act before they are stopped.
+  const limit = typeof balance.coins_floor === "number" && left < 0
+    ? " · limit " + balance.coins_floor
+    : "";
   el.textContent = left + (left === 1 ? " coin" : " coins") +
-    " · resets " + _shortDate(balance.resets_at);
+    limit + " · resets " + _shortDate(balance.resets_at);
   el.classList.toggle("negative", left < 0);
+  if (balance.blocked) {
+    appendTurn("[system] This account has reached its credit limit and is paused. " +
+      "Contact BQBase to settle up and continue.", "error");
+  }
 }
 
 // Updated from the headers that ride back on every turn, which avoids a

@@ -1,13 +1,18 @@
 /*
 ============================================================================
- attachments.js -- drag-and-drop file attachments for the chat input
+ attachments.js -- file attachments, dropped in and already on the message
 ============================================================================
 
- Classifies a dropped file, builds the matching content block or extracted
- text, and caps size/count. DOCX/XLSX parsing has no lightweight browser
- equivalent without pulling in a real parsing library, so this supports
- images, PDF, and plain text only. Unsupported types get a clear per-file
- error -- never silently dropped.
+ Classifies a file, builds the matching content block or extracted text, and
+ caps size and count. TWO sources: files the user drops or browses to, and
+ the ones already on the open message (see "attachments already on the
+ message" below).
+
+ Supported: images (jpg/png/gif/webp), PDF, plain text (.txt/.csv/.md/.log),
+ and Word/Excel/PowerPoint via ooxml.js, which reads them without a library
+ because they are ZIP archives of XML. The LEGACY binary .doc/.xls/.ppt are
+ not ZIPs and cannot be read in a browser; they, .rtf and .msg get a clear
+ per-file error -- never silently dropped.
 
  Uses the plain HTML5 Drag and Drop API, NOT Office.js's DragAndDropEvent --
  confirmed via Microsoft's own drag-drop-items.md doc: dropping an OS
@@ -174,9 +179,13 @@ function _readAsText(file) {
 // not the version.
 function attachmentApiAvailable(item) {
   try {
-    if (Array.isArray(item.attachments)) return true;   // read mode needs no API
-    return typeof item.getAttachmentsAsync === "function" &&
-           typeof item.getAttachmentContentAsync === "function";
+    // getAttachmentContentAsync is required either way -- listing the files
+    // is no use without being able to read them. Checking only
+    // item.attachments in read mode would show a priced Review button that
+    // fails for every file the moment it is pressed.
+    if (typeof item.getAttachmentContentAsync !== "function") return false;
+    if (Array.isArray(item.attachments)) return true;   // read mode lists them directly
+    return typeof item.getAttachmentsAsync === "function";
   } catch (err) {
     return false;
   }

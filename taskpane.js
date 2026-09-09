@@ -92,6 +92,13 @@ async function loadItemAttachments() {
   const taken = entries.slice(0, Math.max(0, room));
   pendingAttachments = pendingAttachments.concat(taken);
   renderAttachmentChips();
+  // An email with more attachments than the limit used to drop the surplus
+  // without a word, so the customer would review 10 of 14 contracts believing
+  // they had reviewed all of them. Said out loud instead.
+  if (entries.length > taken.length) {
+    appendTurn("[system] This email has " + entries.length + " attachments; only the first " +
+      taken.length + " are listed. Remove some to reach the rest.", "system");
+  }
 
   // Word, Excel, PowerPoint and text files are billed on the text INSIDE
   // them, which a compressed file's size does not predict. They are fetched
@@ -463,10 +470,18 @@ async function onReviewAttachments() {
   // Reply, so leaving it true would let the customer paste a numbered list
   // of options into the email as though it were the reply.
   const wantsOptions = !text;
-  await dispatchTurn(
+  const ok = await dispatchTurn(
     text || REVIEW_THEN_OPTIONS_PROMPT,
     !wantsOptions, ready, "attachment"
   );
+  // A failed turn costs no coins, so the files go back in the row rather than
+  // making the customer find the email again to retry. Their content is
+  // already fetched, so the retry is free and instant.
+  if (!ok) {
+    pendingAttachments = ready.concat(pendingAttachments);
+    renderAttachmentChips();
+    appendTurn("[system] The attachments are still listed -- press Review to try again.", "system");
+  }
 }
 
 const REVIEW_THEN_OPTIONS_PROMPT =
@@ -616,6 +631,7 @@ async function dispatchTurn(text, isDraftCandidate, attachments, purpose) {
       : result.error;
     appendTurn(message, "error");
   }
+  return result.ok;
 }
 
 async function onInsert() {

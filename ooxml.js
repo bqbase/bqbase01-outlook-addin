@@ -165,13 +165,83 @@ async function _readText(bytes, entries, name, budget) {
 // DOM to then throw it away costs time and memory the pane does not need to
 // spend for a flat text dump.
 
+// Finds <open ...>...<closer> blocks by SCANNING, never by a lazy regex.
+//
+// /<row[\s\S]*?<\/row>/g looks equivalent and is quadratic: every opening
+// token that never closes makes the engine scan to the end of the string
+// before failing and advancing to the next one. Measured 2026-09-09 on a
+// 576-byte .xlsx holding 100,000 unclosed "<row" tokens: 5.9 seconds, rising
+// fourfold per doubling. The byte caps do not help -- one repeated 4-byte
+// token compresses to almost nothing.
+//
+// Here each match advances the cursor past its closer, so the regions
+// searched never overlap and the whole pass is linear. A missing closer ends
+// the scan: nothing after it can form a complete block either.
+function _blocks(text, open, closers, nextCharIn) {
+  const out = [];
+  let pos = 0;
+  while (pos < text.length) {
+    const start = text.indexOf(open, pos);
+    if (start === -1) break;
+    // "<c" must not match "<cols>" or "<color>", so the following character
+    // is checked rather than assumed.
+    if (nextCharIn && !nextCharIn.includes(text[start + open.length])) {
+      pos = start + open.length;
+      continue;
+    }
+    let end = -1;
+    let closer = "";
+    for (const candidate of closers) {
+      const at = text.indexOf(candidate, start + open.length);
+      if (at !== -1 && (end === -1 || at < end)) {
+        end = at;
+        closer = candidate;
+      }
+    }
+    if (end === -1) break;
+    out.push(text.slice(start, end + closer.length));
+    pos = end + closer.length;
+  }
+  return out;
+}
+
+// Strips XML tags in one linear pass. /<[^>]+>/g has the same quadratic
+// shape as the lazy scans above when the input carries many "<" and no ">",
+// so tag removal is done by hand too. An unterminated tag ends the document
+// rather than being treated as text.
+function _stripTags(text) {
+  const parts = [];
+  let i = 0;
+  while (i < text.length) {
+    const lt = text.indexOf("<", i);
+    if (lt === -1) {
+      parts.push(text.slice(i));
+      break;
+    }
+    parts.push(text.slice(i, lt));
+    const gt = text.indexOf(">", lt + 1);
+    if (gt === -1) break;
+    i = gt + 1;
+  }
+  return parts.join("");
+}
+
 function _decodeEntities(text) {
   return text
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    // fromCodePoint THROWS RangeError above 0x10FFFF, and the number comes
+    // straight out of the attachment -- "&#99999999;" would kill the whole
+    // file rather than one character. Out-of-range entities are left as
+    // written instead.
+    .replace(/&#(\d+);/g, (whole, d) => _codePoint(Number(d), whole))
+    .replace(/&#x([0-9a-fA-F]+);/g, (whole, h) => _codePoint(parseInt(h, 16), whole))
     .replace(/&amp;/g, "&");                               // last, or it double-decodes
+}
+
+function _codePoint(value, original) {
+  if (!Number.isFinite(value) || value < 0 || value > 0x10ffff) return original;
+  return String.fromCodePoint(value);
 }
 
 // Turns a fragment of OOXML into readable text: the given tags become line
@@ -179,11 +249,19 @@ function _decodeEntities(text) {
 function _xmlToText(xml, breakTags) {
   let out = xml;
   for (const tag of breakTags) {
-    out = out.replace(new RegExp("</" + tag + ">", "g"), "\n");
+    out = out.split("</" + tag + ">").join("\n");          // literal, so no regex build
   }
-  out = out.replace(/<w:tab\/>/g, "\t").replace(/<w:br\/>/g, "\n");
-  out = out.replace(/<[^>]+>/g, "");                       // every remaining tag
-  return _decodeEntities(out).replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  out = out.split("<w:tab/>").join("\t").split("<w:br/>").join("\n");
+  out = _stripTags(out);                                   // every remaining tag
+  // Trailing whitespace is trimmed line by line with trimEnd(), NOT with
+  // /[ \t]+\n/g. That pattern backtracks across every start position in a run
+  // of spaces not followed by a newline: measured at 4.5 seconds for a
+  // 296-byte .docx, quadrupling per doubling, which at the size the inflate
+  // cap allows never returns. trimEnd is linear.
+  return _decodeEntities(out)
+    .split("\n").map((line) => line.trimEnd()).join("\n")
+    .replace(/\n{3,}/g, "\n\n")                            // fixed char, cannot backtrack
+    .trim();
 }
 
 // ---- the three formats --------------------------------------------------
@@ -214,8 +292,8 @@ async function _extractXlsx(bytes, entries, budget) {
   // that table has to be read before any sheet makes sense.
   const sharedXml = await _readText(bytes, entries, "xl/sharedStrings.xml", budget);
   const shared = [];
-  for (const si of sharedXml.match(/<si>[\s\S]*?<\/si>/g) || []) {
-    shared.push(_decodeEntities(si.replace(/<[^>]+>/g, "")));
+  for (const si of _blocks(sharedXml, "<si>", ["</si>"])) {
+    shared.push(_decodeEntities(_stripTags(si)));
   }
 
   // Sheet NAMES live in workbook.xml while the CONTENT lives in numbered
@@ -233,15 +311,19 @@ async function _extractXlsx(bytes, entries, budget) {
   for (let i = 0; i < sheets.length; i++) {
     const xml = await _readText(bytes, entries, sheets[i], budget);
     const rows = [];
-    for (const row of xml.match(/<row[\s\S]*?<\/row>/g) || []) {
+    for (const row of _blocks(xml, "<row", ["</row>"])) {
       const cells = [];
-      for (const cell of row.match(/<c[ >][\s\S]*?(?:<\/c>|\/>)/g) || []) {
+      // "<c" also begins <cols> and <color>, so only a space or ">" counts.
+      for (const cell of _blocks(row, "<c", ["</c>", "/>"], " >")) {
         const type = (cell.match(/\st="([^"]*)"/) || [])[1];
-        const value = (cell.match(/<v>([\s\S]*?)<\/v>/) || [])[1];
+        const held = _blocks(cell, "<v>", ["</v>"]);
+        const value = held.length ? _stripTags(held[0]) : undefined;
         if (type === "s") {
+          // Number() on an attacker's index can be NaN or out of range; an
+          // absent entry becomes an empty cell rather than "undefined".
           cells.push(shared[Number(value)] || "");
         } else if (type === "inlineStr") {
-          cells.push(_decodeEntities((cell.match(/<t[^>]*>([\s\S]*?)<\/t>/) || [])[1] || ""));
+          cells.push(_decodeEntities(_stripTags(cell)));
         } else {
           cells.push(value === undefined ? "" : _decodeEntities(value));
         }

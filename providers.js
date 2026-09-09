@@ -46,20 +46,73 @@ const PROXY_URL = "https://bqbase-openrouter-proxy.bqbase.workers.dev";
 const REQUEST_MODEL = "openai/gpt-5.6-luna";
 const REASONING_EFFORT = "medium";
 
-async function sendTurnStreaming(systemPrompt, history, onDelta) {
-  const messages = [{ role: "system", content: systemPrompt }].concat(history);
+// The customer's access token, kept on this machine only. localStorage rather
+// than roaming settings deliberately: it is a credential, and Office's
+// RoamingSettings would sync it to the mailbox where other clients could read
+// it.
+const TOKEN_KEY = "bqbase_token";
+
+function getToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch (err) {
+    return ""; // storage blocked -- treated as "no token", not as an error
+  }
+}
+
+function setToken(value) {
+  try {
+    localStorage.setItem(TOKEN_KEY, value);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// Asks the Worker what this token is worth. Returns {ok, balance} or
+// {ok:false, error} -- never throws, same contract as everything else here.
+async function fetchBalance() {
+  const token = getToken();
+  if (!token) return { ok: false, error: "No access token set." };
   let response;
   try {
+    response = await fetch(PROXY_URL + "/balance", {
+      method: "GET",
+      headers: { "X-BQBase-Token": token },
+    });
+  } catch (err) {
+    return { ok: false, error: "Could not reach the assistant service." };
+  }
+  const bodyText = await _safeReadText(response);
+  if (!response.ok) {
+    return { ok: false, error: _serverMessage(bodyText) || "That token was not accepted." };
+  }
+  try {
+    return { ok: true, balance: JSON.parse(bodyText) };
+  } catch (err) {
+    return { ok: false, error: "Unreadable reply from the assistant service." };
+  }
+}
+
+// purpose is what the call is CHARGED as: "review" is free, "reply" is one
+// coin, "attachment" is priced from the files. The Worker decides the price;
+// this only declares the kind.
+async function sendTurnStreaming(systemPrompt, history, onDelta, purpose) {
+  const messages = [{ role: "system", content: systemPrompt }].concat(history);
+  const token = getToken();
+  let response;
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["X-BQBase-Token"] = token;
     response = await fetch(PROXY_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: headers,
       body: JSON.stringify({
         model: REQUEST_MODEL,
         messages: messages,
         stream: true,
         reasoning_effort: REASONING_EFFORT,
+        bqbase_purpose: purpose || "reply",
       }),
     });
   } catch (err) {
@@ -72,7 +125,9 @@ async function sendTurnStreaming(systemPrompt, history, onDelta) {
       return { ok: false, error: "The proxy's API key was rejected (401)." };
     }
     if (response.status === 403) {
-      return { ok: false, error: "The proxy refused this request (403). Check its allowed origins and model." };
+      // Also how a suspended account arrives, and the Worker's wording is
+      // far more useful than anything guessable from the status alone.
+      return { ok: false, error: _serverMessage(bodyText) || "The proxy refused this request (403)." };
     }
     if (response.status === 402) {
       // The daily spending cap. Shown verbatim because only the Worker knows
@@ -86,7 +141,24 @@ async function sendTurnStreaming(systemPrompt, history, onDelta) {
     return { ok: false, error: "API error (HTTP " + response.status + "): " + bodyText };
   }
 
-  return _readSse(response, onDelta);
+  // The coin figures ride back on headers, so the pane can update its counter
+  // without a second round trip to /balance. Absent for the unmetered paths,
+  // which is why every caller must tolerate nulls here.
+  const coins = {
+    charged: _headerNumber(response, "X-BQBase-Coins-Charged"),
+    left: _headerNumber(response, "X-BQBase-Coins-Left"),
+    resets: response.headers.get("X-BQBase-Resets"),
+  };
+  const result = await _readSse(response, onDelta);
+  result.coins = coins;
+  return result;
+}
+
+function _headerNumber(response, name) {
+  const raw = response.headers.get(name);
+  if (raw === null || raw === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
 }
 
 // Parses an OpenAI-compatible Server-Sent-Events stream: lines

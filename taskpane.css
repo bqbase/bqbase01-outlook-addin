@@ -166,3 +166,82 @@ button.secondary {
 .turn.assistant strong {
   color: #c0362c;
 }
+
+/* --- paid product: settings, coin counter, attachment review ---------- */
+
+.loading-note {
+  padding: 12px;
+}
+
+.settings-block {
+  padding: 12px;
+}
+
+.settings-title {
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+#token-input {
+  width: 100%;
+  padding: 6px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.settings-error {
+  color: #c0362c;
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+/* The coin counter sits above everything, because a customer who is out of
+   coins needs to see why before they wonder what went wrong. */
+.coin-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #f5f7fa;
+  border-bottom: 1px solid #e3e6ea;
+  font-size: 12px;
+}
+
+.coin-count {
+  color: #444;
+}
+
+/* A negative balance is allowed and does not stop work, so it is coloured
+   as a warning rather than an error -- nothing is broken. */
+.coin-count.negative {
+  color: #b25000;
+  font-weight: 600;
+}
+
+button.linklike {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: #0066cc;
+  font-size: 12px;
+  flex: none;
+}
+
+.attach-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* The price is shown BEFORE the button is pressed, and is exactly what gets
+   charged -- the customer is never billed a different number. */
+.attach-estimate {
+  color: #6b6b6b;
+  font-size: 11px;
+}

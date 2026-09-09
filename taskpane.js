@@ -16,7 +16,7 @@ let lastDraft = null; // last successful draft, enables INSERT
 let busy = false;
 let pendingAttachments = []; // Attachment[] from attachments.js
 
-Office.onReady((info) => {
+Office.onReady(async (info) => {
   if (info.host !== Office.HostType.Outlook) return;
   currentItem = Office.context.mailbox.item;
 
@@ -43,13 +43,110 @@ Office.onReady((info) => {
   // addFiles handler, matching how forgiving a real drop zone should be.
   _wireDropTarget(document.getElementById("transcript"));
 
+  document.getElementById("settingsBtn").addEventListener("click", () => showSettings(true));
+  document.getElementById("saveTokenBtn").addEventListener("click", onSaveToken);
+  document.getElementById("cancelTokenBtn").addEventListener("click", () => {
+    showChatScreen();
+  });
+  document.getElementById("reviewAttachBtn").addEventListener("click", onReviewAttachments);
+
+  // A customer with no token has nothing to look at, so send them straight to
+  // the one field that matters rather than a chat screen that cannot work.
+  if (!getToken()) {
+    showSettings(false);
+    return;
+  }
   showChatScreen();
+  await refreshCoinBar();
   maybeAutoSuggestReplyOptions();
 });
+
+// -- settings ------------------------------------------------------------
+
+// canCancel is false on first run: there is no chat screen to go back to yet.
+function showSettings(canCancel) {
+  document.getElementById("screen-chat").classList.add("hidden");
+  document.getElementById("screen-settings").classList.remove("hidden");
+  document.getElementById("token-input").value = getToken();
+  document.getElementById("settings-error").classList.add("hidden");
+  document.getElementById("cancelTokenBtn").classList.toggle("hidden", !canCancel);
+}
+
+// The token is VERIFIED against the service before it is accepted, so a typo
+// is caught here rather than surfacing as a confusing failure on the first
+// real request.
+async function onSaveToken() {
+  const field = document.getElementById("token-input");
+  const errorBox = document.getElementById("settings-error");
+  const button = document.getElementById("saveTokenBtn");
+  const value = field.value.trim();
+  if (!value) {
+    errorBox.textContent = "Paste your access token first.";
+    errorBox.classList.remove("hidden");
+    return;
+  }
+
+  button.disabled = true;
+  const previous = getToken();
+  setToken(value);
+  const result = await fetchBalance();
+  button.disabled = false;
+
+  if (!result.ok) {
+    setToken(previous); // do not leave a bad token stored
+    errorBox.textContent = result.error;
+    errorBox.classList.remove("hidden");
+    return;
+  }
+
+  showChatScreen();
+  renderCoinBar(result.balance);
+  maybeAutoSuggestReplyOptions();
+}
+
+// -- the coin counter ----------------------------------------------------
+
+function renderCoinBar(balance) {
+  const el = document.getElementById("coin-count");
+  if (!balance) {
+    el.textContent = "";
+    return;
+  }
+  const left = balance.coins_left;
+  el.textContent = left + (left === 1 ? " coin" : " coins") +
+    " · resets " + _shortDate(balance.resets_at);
+  el.classList.toggle("negative", left < 0);
+}
+
+// Updated from the headers that ride back on every turn, which avoids a
+// second round trip to /balance after each reply.
+function updateCoinBarFromTurn(coins) {
+  if (!coins || coins.left === null) return;
+  const el = document.getElementById("coin-count");
+  const resets = coins.resets ? " · resets " + _shortDate(coins.resets) : "";
+  el.textContent = coins.left + (coins.left === 1 ? " coin" : " coins") + resets;
+  el.classList.toggle("negative", coins.left < 0);
+}
+
+async function refreshCoinBar() {
+  const result = await fetchBalance();
+  if (result.ok) renderCoinBar(result.balance);
+}
+
+// "2026-10-08" -> "8 Oct". Parsed as parts rather than through Date, which
+// would read a bare YYYY-MM-DD as UTC and can show the previous day.
+function _shortDate(iso) {
+  if (!iso) return "";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const [, m, d] = iso.split("-").map(Number);
+  return d + " " + (months[m - 1] || "");
+}
 
 // -- screen management --------------------------------------------------
 
 function showChatScreen() {
+  document.getElementById("screen-settings").classList.add("hidden");
   document.getElementById("screen-chat").classList.remove("hidden");
   updateStatusLine();
 }
@@ -77,6 +174,7 @@ function appendTurn(text, cssClass) {
 function setBusy(isBusy) {
   busy = isBusy;
   document.getElementById("input-box").disabled = isBusy;
+  document.getElementById("reviewAttachBtn").disabled = isBusy;
 }
 
 // -- attachments -------------------------------------------------------
@@ -133,28 +231,64 @@ function renderAttachmentChips() {
     chip.appendChild(removeBtn);
     row.appendChild(chip);
   });
+  renderAttachRow();
+}
+
+// Attaching a file costs NOTHING. Reviewing it is a separate, priced action,
+// and the price is shown before the button is pressed -- the customer is
+// charged exactly this number, never a different one worked out afterwards.
+function renderAttachRow() {
+  const row = document.getElementById("attach-row");
+  const usable = pendingAttachments.filter((a) => !a.error);
+  if (usable.length === 0) {
+    row.classList.add("hidden");
+    return;
+  }
+  const coins = estimateCoins(usable);
+  document.getElementById("attach-estimate").textContent =
+    coins + (coins === 1 ? " coin" : " coins");
+  document.getElementById("reviewAttachBtn").textContent =
+    usable.length === 1 ? "Review attachment" : "Review " + usable.length + " attachments";
+  row.classList.remove("hidden");
 }
 
 async function onSend() {
   if (busy) return;
   const inputBox = document.getElementById("input-box");
   const text = inputBox.value.trim();
-  // A message with no typed text but pending attachments is valid --
-  // e.g. drop a PDF and press Enter with nothing typed.
-  if (!text && pendingAttachments.length === 0) return;
+  if (!text) return; // attachments have their own button now
 
-  let display = "You: " + (text || "(no message)");
-  const okAttachments = pendingAttachments.filter((a) => !a.error);
-  if (okAttachments.length) {
-    display += "\n[Attached: " + okAttachments.map((a) => a.filename).join(", ") + "]";
-  }
-  appendTurn(display, "user");
+  appendTurn("You: " + text, "user");
+  inputBox.value = "";
+  // Attachments deliberately stay put. A reply is one coin; reviewing a
+  // document is a separate action the customer chooses and is quoted for.
+  await dispatchTurn(text, true, null, "reply");
+}
+
+// The priced action. Sends the attachments with whatever instruction is in
+// the box, then clears them so the same document cannot be silently charged
+// for twice.
+async function onReviewAttachments() {
+  if (busy) return;
+  const usable = pendingAttachments.filter((a) => !a.error);
+  if (usable.length === 0) return;
+
+  const inputBox = document.getElementById("input-box");
+  const text = inputBox.value.trim();
+  const coins = estimateCoins(usable);
+
+  let line = "You: [Reviewing " + usable.map((a) => a.filename).join(", ") +
+    " -- " + coins + (coins === 1 ? " coin" : " coins") + "]";
+  if (text) line += "\n" + text;
+  appendTurn(line, "user");
 
   inputBox.value = "";
-  const sentAttachments = pendingAttachments;
   pendingAttachments = [];
   renderAttachmentChips();
-  await dispatchTurn(text, true, sentAttachments);
+  await dispatchTurn(
+    text || "Review the attached document and tell me what matters for my reply.",
+    true, usable, "attachment"
+  );
 }
 
 // Fires once on a reply/forward: a synthetic first turn, not shown as
@@ -169,7 +303,7 @@ async function maybeAutoSuggestReplyOptions() {
     "Before drafting anything, suggest 2-3 different brief angles or " +
     "approaches I could take in replying to this email (one sentence " +
     "each). Don't write a full draft yet -- just the options.",
-    false
+    false, null, "review"
   );
 }
 
@@ -236,7 +370,10 @@ function renderAssistantTurn(el, text) {
   for (const node of _markdownNodes(text)) el.appendChild(node);
 }
 
-async function dispatchTurn(text, isDraftCandidate, attachments) {
+// purpose decides the PRICE, not the behaviour: "review" is free, "reply" is
+// one coin, "attachment" is the quoted estimate. The Worker charges it; this
+// only declares which kind of call it is.
+async function dispatchTurn(text, isDraftCandidate, attachments, purpose) {
   const content = attachments && attachments.length ? buildMessageContent(text, attachments) : text;
   history.push({ role: "user", content: content });
   setBusy(true);
@@ -252,9 +389,12 @@ async function dispatchTurn(text, isDraftCandidate, attachments) {
     transcript.scrollTop = transcript.scrollHeight;
   };
 
-  const result = await sendTurnStreaming(systemPrompt, history, onDelta);
+  const result = await sendTurnStreaming(systemPrompt, history, onDelta, purpose);
 
   setBusy(false);
+  // Updated even when the turn FAILED: a refusal may itself be the reason
+  // (a suspended account), and a stale counter is worse than none.
+  updateCoinBarFromTurn(result.coins);
 
   if (result.ok) {
     history.push({ role: "assistant", content: result.text });

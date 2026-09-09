@@ -8,14 +8,45 @@
 </head>
 <body>
   <div id="screen-loading">
-    <p style="padding: 12px;">Loading...</p>
+    <p class="loading-note">Loading...</p>
+  </div>
+
+  <!-- Shown when no access token is stored, and from the settings link.
+       This is a narrower return of the Settings screen removed on
+       2026-08-25: one field, no provider or model choice. -->
+  <div id="screen-settings" class="hidden">
+    <div class="settings-block">
+      <p class="settings-title">Access token</p>
+      <p class="hint">
+        Paste the token you were given. It is stored on this computer only
+        and is not sent anywhere except to the assistant service.
+      </p>
+      <input id="token-input" type="text" placeholder="bq_..." autocomplete="off" />
+      <div id="settings-error" class="settings-error hidden"></div>
+      <div class="action-row">
+        <button id="saveTokenBtn" class="primary" type="button">Save</button>
+        <button id="cancelTokenBtn" class="secondary hidden" type="button">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <div id="screen-chat" class="hidden">
+    <div class="coin-bar">
+      <span id="coin-count" class="coin-count"></span>
+      <button id="settingsBtn" class="linklike" type="button">settings</button>
+    </div>
     <div id="status-line"></div>
     <div id="transcript"></div>
     <textarea id="input-box" placeholder="Ask for a draft, ask a question about this email... (or drop a file here)"></textarea>
     <div id="chips-row" class="chips-row"></div>
+
+    <!-- Attachments are NOT reviewed automatically. Dropping a file costs
+         nothing; reviewing it is an explicit, priced action. -->
+    <div id="attach-row" class="attach-row hidden">
+      <button id="reviewAttachBtn" class="primary" type="button">Review attachment</button>
+      <span id="attach-estimate" class="attach-estimate"></span>
+    </div>
+
     <div class="hint">Enter to submit &middot; Shift+Enter for a new line &middot; drag a file onto the box above to attach it</div>
     <div class="action-row">
       <button id="insertBtn" class="secondary" type="button" disabled>Insert into email</button>

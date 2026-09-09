@@ -88,15 +88,15 @@ async function _processOneFile(file) {
   try {
     if (category === "image") {
       const dataUri = await _readAsDataUrl(file);
-      return { filename: file.name, category, contentBlock: { type: "image_url", image_url: { url: dataUri } } };
+      return { filename: file.name, category, bytes: file.size, contentBlock: { type: "image_url", image_url: { url: dataUri } } };
     }
     if (category === "pdf") {
       const dataUri = await _readAsDataUrl(file);
-      return { filename: file.name, category, contentBlock: { type: "file", file: { filename: file.name, file_data: dataUri } } };
+      return { filename: file.name, category, bytes: file.size, contentBlock: { type: "file", file: { filename: file.name, file_data: dataUri } } };
     }
     if (category === "txt") {
       const text = await _readAsText(file);
-      return { filename: file.name, category, extractedText: text };
+      return { filename: file.name, category, bytes: file.size, extractedText: text };
     }
   } catch (err) {
     return { filename: file.name, category, error: "Could not read this file: " + err };
@@ -119,6 +119,38 @@ function _readAsText(file) {
     reader.onerror = () => reject(reader.error);
     reader.readAsText(file);
   });
+}
+
+// ---- coin estimate -------------------------------------------------------
+//
+// MUST match the Worker's attachmentCoins() exactly. The number shown next to
+// the Review button is the number the customer is charged -- that is the
+// promise -- so if these two formulas ever disagree, the customer sees one
+// price and pays another. Change both together, or not at all.
+//
+// The Worker works from the base64 payload it receives and this works from
+// the raw file, which is why the ratio appears here and not there: base64
+// carries 3 bytes per 4 characters, so the Worker's length * 0.75 recovers
+// the original size that these numbers are already in.
+const COINS_PER_IMAGE = 2;
+const COINS_PER_MB_PDF = 3;
+const TEXT_CHARS_PER_COIN = 20000;
+
+function estimateCoins(attachments) {
+  let fileBytes = 0;
+  let images = 0;
+  let textChars = 0;
+  for (const att of attachments || []) {
+    if (att.error) continue; // never charge for a file that will not be sent
+    if (att.category === "image") images += 1;
+    else if (att.category === "pdf") fileBytes += att.bytes || 0;
+    else if (att.extractedText !== undefined) textChars += att.extractedText.length;
+  }
+  const coins =
+    Math.ceil((fileBytes / (1024 * 1024)) * COINS_PER_MB_PDF) +
+    images * COINS_PER_IMAGE +
+    Math.ceil(textChars / TEXT_CHARS_PER_COIN);
+  return Math.max(1, coins);
 }
 
 // buildMessageContent(userText, attachments) -> string | array

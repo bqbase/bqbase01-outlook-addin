@@ -52,7 +52,12 @@
 
     <div class="hint">Enter to submit &middot; Shift+Enter for a new line &middot; drag a file onto the box above to attach it</div>
     <div class="action-row">
+      <!-- Which of these is shown depends on the surface. A received message
+           has no compose body to insert into, so it offers to OPEN a reply
+           already containing the draft instead. -->
       <button id="insertBtn" class="secondary" type="button" disabled>Insert into email</button>
+      <button id="replyBtn" class="secondary hidden" type="button" disabled>Reply</button>
+      <button id="replyAllBtn" class="secondary hidden" type="button" disabled>Reply All</button>
       <button id="browseBtn" class="secondary" type="button">Browse for file</button>
       <input id="fileInput" type="file" multiple class="hidden" />
     </div>
@@ -60,6 +65,8 @@
 
   <script src="providers.js"></script>
   <script src="mail-context.js"></script>
+  <!-- Before attachments.js, which calls extractOfficeText. -->
+  <script src="ooxml.js"></script>
   <script src="attachments.js"></script>
   <script src="insert.js"></script>
   <script src="taskpane.js"></script>

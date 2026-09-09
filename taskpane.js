@@ -29,6 +29,9 @@ Office.onReady(async (info) => {
   document.getElementById("screen-loading").classList.add("hidden");
 
   document.getElementById("insertBtn").addEventListener("click", onInsert);
+  document.getElementById("replyBtn").addEventListener("click", () => onReplyWithDraft(false));
+  document.getElementById("replyAllBtn").addEventListener("click", () => onReplyWithDraft(true));
+  configureDraftButtons();
   document.getElementById("input-box").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -86,8 +89,24 @@ async function loadItemAttachments() {
   }
   if (entries.length === 0) return;
   const room = MAX_ATTACHMENTS_PER_MESSAGE - pendingAttachments.length;
-  pendingAttachments = pendingAttachments.concat(entries.slice(0, Math.max(0, room)));
+  const taken = entries.slice(0, Math.max(0, room));
+  pendingAttachments = pendingAttachments.concat(taken);
   renderAttachmentChips();
+
+  // Word, Excel, PowerPoint and text files are billed on the text INSIDE
+  // them, which a compressed file's size does not predict. They are fetched
+  // and extracted now so the quoted price is the real one. The row is already
+  // on screen with the PDFs and images priced, and its total updates when
+  // this finishes -- better than showing nothing while it runs.
+  if (taken.some((a) => TEXT_PRODUCING.has(a.category))) {
+    setAttachEstimatePending(true);
+    try {
+      await resolveTextAttachments(currentItem, taken);
+    } finally {
+      setAttachEstimatePending(false);
+      renderAttachmentChips();
+    }
+  }
 }
 
 // The SIGNED-IN USER's address, which is deliberately not "the mailbox
@@ -307,11 +326,24 @@ function renderAttachRow() {
     return;
   }
   const coins = estimateCoins(usable);
-  document.getElementById("attach-estimate").textContent =
-    coins + (coins === 1 ? " coin" : " coins");
+  // While an Office document is still being read, the total is not yet the
+  // real one. Saying so beats showing a number that is about to change on its
+  // own, which reads as the price moving after it was quoted.
+  document.getElementById("attach-estimate").textContent = attachEstimatePending
+    ? "reading documents..."
+    : coins + (coins === 1 ? " coin" : " coins");
   document.getElementById("reviewAttachBtn").textContent =
     usable.length === 1 ? "Review attachment" : "Review " + usable.length + " attachments";
+  document.getElementById("reviewAttachBtn").disabled = attachEstimatePending || busy;
   row.classList.remove("hidden");
+}
+
+// True while Office documents are being fetched and unzipped to price them.
+let attachEstimatePending = false;
+
+function setAttachEstimatePending(pending) {
+  attachEstimatePending = pending;
+  renderAttachRow();
 }
 
 async function onSend() {
@@ -490,7 +522,7 @@ async function dispatchTurn(text, isDraftCandidate, attachments, purpose) {
     let displayText = result.text;
     if (isDraftCandidate) {
       lastDraft = result.text;
-      document.getElementById("insertBtn").disabled = false;
+      enableDraftButtons();
       // Swap the raw SUBJECT:/body/<<<END EMAIL>>> scaffolding for a
       // human-readable rendering. Confirmed live during testing that
       // without this, a real draft showed the literal "SUBJECT: ..." and
@@ -520,5 +552,29 @@ async function dispatchTurn(text, isDraftCandidate, attachments, purpose) {
 async function onInsert() {
   if (!lastDraft) return;
   const result = await insertDraft(currentItem, lastDraft);
+  appendTurn("[system] " + result.message, result.ok ? "system" : "error");
+}
+
+// Read mode cannot insert -- there is no draft to insert INTO -- so it offers
+// to open one already containing the draft. Compose mode keeps the
+// cursor-insert, which is the only thing that preserves a quoted thread.
+function configureDraftButtons() {
+  const readMode = isReadMode(currentItem);
+  document.getElementById("insertBtn").classList.toggle("hidden", readMode);
+  document.getElementById("replyBtn").classList.toggle("hidden", !readMode);
+  document.getElementById("replyAllBtn").classList.toggle("hidden", !readMode);
+}
+
+// Enables whichever pair is on screen. Kept in one place so a new draft can
+// never light up a button that is not the one being shown.
+function enableDraftButtons() {
+  for (const id of ["insertBtn", "replyBtn", "replyAllBtn"]) {
+    document.getElementById(id).disabled = false;
+  }
+}
+
+function onReplyWithDraft(replyAll) {
+  if (!lastDraft) return;
+  const result = replyWithDraft(currentItem, lastDraft, replyAll);
   appendTurn("[system] " + result.message, result.ok ? "system" : "error");
 }

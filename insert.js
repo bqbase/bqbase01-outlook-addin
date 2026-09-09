@@ -19,6 +19,54 @@
 ============================================================================
 */
 
+// Office refuses a reply form body over 32KB. Checked here rather than left
+// to fail, because the failure is a reply window that opens EMPTY -- which
+// reads as "the add-in lost my draft" rather than as a size limit.
+const MAX_REPLY_HTML = 32 * 1024;
+
+// True when the pane is open on a RECEIVED message rather than a draft.
+// displayReplyForm exists only on read items, so asking for the method is a
+// more direct test than inferring the mode from item.subject's shape.
+function isReadMode(item) {
+  return typeof item.displayReplyForm === "function";
+}
+
+// replyWithDraft(item, rawDraftText, replyAll) -> {ok, message}
+//
+// A read item has NO compose body to insert into -- item.body offers
+// getAsync and nothing else -- so setSelectedDataAsync, which insertDraft
+// uses below, simply is not there. Opening a reply form prefilled with the
+// draft is the read-mode equivalent, and it is a better flow anyway: the
+// attachments have already been reviewed by the time the reply exists.
+//
+// Synchronous by design -- displayReplyForm returns nothing and reports
+// nothing. The async variants that do report are Mailbox 1.9, above the 1.5
+// this add-in declares, so a thrown exception is the only failure signal
+// available.
+function replyWithDraft(item, rawDraftText, replyAll) {
+  const { body } = parseDraft(rawDraftText);
+  const html = body.split("\n").map(_escapeHtml).join("<br>");
+  if (html.length > MAX_REPLY_HTML) {
+    return { ok: false, message: "This draft is too long for Outlook's reply form (" +
+      Math.round(html.length / 1024) + "KB, limit 32KB). Shorten it and try again." };
+  }
+  // No subject is passed: displayReplyForm has no subject field, so a
+  // proposed subject change cannot be applied on this path. Replies keep
+  // Outlook's own "Re: ...", which is what the model is told to leave alone.
+  try {
+    if (replyAll) {
+      item.displayReplyAllForm({ htmlBody: html });
+    } else {
+      item.displayReplyForm({ htmlBody: html });
+    }
+  } catch (err) {
+    return { ok: false, message: "Could not open the reply form: " + err };
+  }
+  return { ok: true, message: replyAll
+    ? "Opened a Reply All with the draft."
+    : "Opened a Reply with the draft." };
+}
+
 // insertDraft(item, rawDraftText) -> Promise<{ok, message}>
 // rawDraftText is the model's raw reply text -- may or may not follow the
 // SUBJECT:/body/<<<END EMAIL>>> contract (see mail-context.js's parseDraft).

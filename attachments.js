@@ -26,8 +26,17 @@ const IMAGE_MEDIA_TYPES = {
   ".webp": "image/webp",
 };
 const PDF_EXTENSIONS = new Set([".pdf"]);
-const TEXT_EXTENSIONS = new Set([".txt"]);
-const UNSUPPORTED_BUT_KNOWN = new Set([".docx", ".xlsx", ".msg"]); // clear error, not silent drop
+const TEXT_EXTENSIONS = new Set([".txt", ".csv", ".md", ".log"]);
+// Word, Excel and PowerPoint, read by ooxml.js. Their extension maps to the
+// category name so classifyFile can return it directly.
+const OFFICE_EXTENSIONS = { ".docx": "docx", ".xlsx": "xlsx", ".pptx": "pptx" };
+// The LEGACY binary formats, which are not ZIPs and cannot be read in a
+// browser. A clear per-file error, never a silent drop.
+const UNSUPPORTED_BUT_KNOWN = new Set([".doc", ".xls", ".ppt", ".msg", ".rtf"]);
+// Every category that becomes extracted TEXT rather than a native block.
+// These are billed on their text, so they must be extracted BEFORE the
+// customer is quoted -- see resolveTextAttachments.
+const TEXT_PRODUCING = new Set(["txt", "docx", "xlsx", "pptx"]);
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // 20MB per file
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
@@ -41,6 +50,7 @@ function classifyFile(filename) {
   const ext = _extOf(filename);
   if (ext in IMAGE_MEDIA_TYPES) return "image";
   if (PDF_EXTENSIONS.has(ext)) return "pdf";
+  if (ext in OFFICE_EXTENSIONS) return OFFICE_EXTENSIONS[ext];
   if (TEXT_EXTENSIONS.has(ext)) return "txt";
   if (UNSUPPORTED_BUT_KNOWN.has(ext)) return "unsupported-known";
   return "unknown";
@@ -49,6 +59,20 @@ function classifyFile(filename) {
 function _extOf(filename) {
   const idx = filename.lastIndexOf(".");
   return idx === -1 ? "" : filename.slice(idx).toLowerCase();
+}
+
+// Names the newer format the user can save as, rather than just refusing.
+// The legacy Office formats are binary compound documents, not ZIPs, so
+// nothing in the browser can open them -- but "save it as .docx" is a fix
+// the customer can actually carry out.
+function _legacyFormatError(filename) {
+  const ext = _extOf(filename);
+  const newer = { ".doc": ".docx", ".xls": ".xlsx", ".ppt": ".pptx" }[ext];
+  if (newer) {
+    return "Old " + ext + " format isn't readable here. Save it as " + newer + " and attach that.";
+  }
+  if (ext === ".rtf") return "RTF isn't supported. Save it as .docx or paste the text instead.";
+  return "Attached emails (.msg) aren't supported yet.";
 }
 
 // processFiles(fileList) -> Promise<Attachment[]>
@@ -75,7 +99,7 @@ async function _processOneFile(file) {
   if (category === "unsupported-known") {
     return {
       filename: file.name, category,
-      error: "DOCX/XLSX/.msg attachments aren't supported yet in this add-in (known, tracked gap -- see STATE.md).",
+      error: _legacyFormatError(file.name),
     };
   }
   if (file.size > MAX_ATTACHMENT_BYTES) {
@@ -96,6 +120,11 @@ async function _processOneFile(file) {
     }
     if (category === "txt") {
       const text = await _readAsText(file);
+      return { filename: file.name, category, bytes: file.size, extractedText: text };
+    }
+    if (TEXT_PRODUCING.has(category)) {                    // .docx / .xlsx / .pptx
+      const buffer = await file.arrayBuffer();
+      const text = await extractOfficeText(new Uint8Array(buffer), category);
       return { filename: file.name, category, bytes: file.size, extractedText: text };
     }
   } catch (err) {
@@ -205,7 +234,7 @@ function describeItemAttachments(details) {
     } else if (category === "unsupported-known") {
       entry.error = isItem
         ? "This is an attached email, which this add-in cannot read yet."
-        : "DOCX/XLSX/.msg attachments aren't supported yet in this add-in (known, tracked gap -- see STATE.md).";
+        : _legacyFormatError(att.name);
     } else if (bytes > MAX_ATTACHMENT_BYTES) {
       entry.error = "File is too large (" + (bytes / (1024 * 1024)).toFixed(1) +
         " MB, max " + (MAX_ATTACHMENT_BYTES / (1024 * 1024)) + " MB).";
@@ -224,12 +253,16 @@ function describeItemAttachments(details) {
 // and that refusal arrives here AFTER the price was quoted.
 function fetchItemAttachment(item, entry) {
   return new Promise((resolve) => {
-    if (entry.error || entry.source !== "item") {
+    // Already resolved: text-producing attachments are fetched when the pane
+    // opens so their price can be exact, and must not be fetched twice when
+    // Review is pressed.
+    if (entry.error || entry.source !== "item" ||
+        entry.extractedText !== undefined || entry.contentBlock !== undefined) {
       resolve(entry);
       return;
     }
     try {
-      item.getAttachmentContentAsync(entry.attachmentId, (result) => {
+      item.getAttachmentContentAsync(entry.attachmentId, async (result) => {
         const ok = result && result.status === Office.AsyncResultStatus.Succeeded;
         if (!ok || !result.value) {
           entry.error = "Outlook would not release this attachment" +
@@ -248,6 +281,8 @@ function fetchItemAttachment(item, entry) {
         try {
           if (entry.category === "txt") {
             entry.extractedText = _decodeBase64Text(content);
+          } else if (TEXT_PRODUCING.has(entry.category)) {
+            entry.extractedText = await extractOfficeText(_base64ToBytes(content), entry.category);
           } else if (entry.category === "image") {
             entry.contentBlock = { type: "image_url", image_url: { url: _dataUri(entry, content) } };
           } else if (entry.category === "pdf") {
@@ -271,14 +306,35 @@ function _dataUri(entry, base64) {
   return "data:" + mime + ";base64," + base64;
 }
 
+function _base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 // atob yields one character per BYTE, so a UTF-8 file with any accented
 // character decodes to mojibake unless the bytes are reassembled and decoded
 // as UTF-8 explicitly.
 function _decodeBase64Text(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder("utf-8").decode(bytes);
+  return new TextDecoder("utf-8").decode(_base64ToBytes(base64));
+}
+
+// Fetches and extracts every attachment that becomes TEXT, so the price shown
+// is the real one rather than a guess from a compressed file's size.
+//
+// This is the cost of quoting honestly for Office documents: a .docx gives no
+// usable clue to how much text is inside -- it is a ZIP, so a small file can
+// hold a lot of words -- and pricing from the compressed size could quote
+// BELOW what the Worker then charges. PDFs and images are left alone: they
+// are priced from size and count, which needs nothing fetched.
+async function resolveTextAttachments(item, entries) {
+  for (const entry of entries || []) {
+    if (entry.error || entry.source !== "item") continue;
+    if (!TEXT_PRODUCING.has(entry.category)) continue;
+    await fetchItemAttachment(item, entry);
+  }
+  return entries;
 }
 
 // ---- coin estimate -------------------------------------------------------
@@ -308,26 +364,23 @@ function estimateCoins(attachments) {
   let textChars = 0;
   for (const att of attachments || []) {
     if (att.error) continue; // never charge for a file that will not be sent
-    if (att.category === "image") images += 1;
-    else if (att.category === "pdf") fileBytes += att.bytes || 0;
-    else if (att.category === "txt") {
-      // Counts the string as it will actually be SENT, prefix included: the
-      // message builder below wraps every extracted file in the marker plus
-      // its filename, and the Worker charges on what it receives. Counting
-      // the bare text here would quote low by the length of that prefix.
+    if (att.category === "image") {
+      images += 1;
+    } else if (att.category === "pdf") {
+      fileBytes += att.bytes || 0;
+    } else {
+      // Everything else -- .txt, .csv, and the three Office formats -- is
+      // sent as extracted TEXT, and is billed on the string as it will
+      // actually be sent, marker prefix and filename included. Counting the
+      // bare text would quote low by the length of that prefix.
       const prefix = ATTACHED_TEXT_MARKER + att.filename + "]\n";
-      // A dropped file has been read already, so its exact character count is
-      // known. One still ON the message has not -- quoting it would mean
-      // fetching every file just to price it, and the price has to appear the
-      // moment the pane opens. Its BYTE count stands in, which for UTF-8 is
-      // always >= the character count the Worker charges on. So this can only
-      // ever quote HIGH, never low: the customer is never charged more than
-      // the number they pressed the button on.
+      // extractedText is normally present by now: resolveTextAttachments
+      // fetches and extracts these when the pane opens, precisely so the
+      // quote is exact. The byte fallback is a guard for the case where that
+      // has not run -- bytes >= characters, so it can only quote HIGH.
       textChars += prefix.length + (att.extractedText !== undefined
         ? att.extractedText.length
         : (att.bytes || 0));
-    } else if (att.extractedText !== undefined) {
-      textChars += att.extractedText.length;
     }
   }
   const coins =

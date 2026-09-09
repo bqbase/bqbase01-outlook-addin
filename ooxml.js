@@ -49,6 +49,10 @@ const MAX_ENTRIES = 5000;                      // a real .pptx has dozens
 // contract is worse than a clear refusal: the review would read as complete
 // while missing whatever came after the cut.
 const MAX_EXTRACTED_CHARS = 2 * 1000 * 1000;
+// One wording, thrown from three places, so the customer sees the same
+// sentence wherever the limit is reached.
+const TOO_MUCH_TEXT = "this document holds too much text to review in one go" +
+  " -- send the relevant section instead";
 
 function _findEocd(view) {
   // The end-of-central-directory record sits at the very end unless the file
@@ -177,30 +181,54 @@ async function _readText(bytes, entries, name, budget) {
 // Here each match advances the cursor past its closer, so the regions
 // searched never overlap and the whole pass is linear. A missing closer ends
 // the scan: nothing after it can form a complete block either.
-function _blocks(text, open, closers, nextCharIn) {
+// Finds <name ...>...</name> and <name ... /> elements by parsing the
+// OPENING TAG, then looking for exactly one closer.
+//
+// The first version searched for several possible closers and kept whichever
+// came first, which was wrong twice over:
+//
+//   WRONG ANSWERS. "/>" matched the end of any self-closing CHILD, so
+//   <c r="B3"><f t="shared" si="0"/><v>30</v></c> -- what Excel writes for
+//   every filled-down formula cell after the first -- was cut at the <f/>
+//   and its value silently vanished. A whole formula column read as blank
+//   while the customer paid for a review that looked complete. Rich inline
+//   strings (<b/> inside <is>) lost their text the same way.
+//
+//   QUADRATIC. A closer that never occurs is searched for from every
+//   element, scanning to the end each time. Measured on "<c />" repeated:
+//   32,000 cells took 2,467ms, quadrupling per doubling. A 96KB .xlsx
+//   inflating to the permitted 64MB works out at days.
+//
+// Reading the opening tag settles both: self-closing is decided by the tag
+// itself rather than by a "/>" that might belong to a child, and there is
+// only ever one closer to look for.
+function _elements(text, name) {
+  const open = "<" + name;
+  const close = "</" + name + ">";
   const out = [];
   let pos = 0;
   while (pos < text.length) {
     const start = text.indexOf(open, pos);
     if (start === -1) break;
-    // "<c" must not match "<cols>" or "<color>", so the following character
-    // is checked rather than assumed.
-    if (nextCharIn && !nextCharIn.includes(text[start + open.length])) {
+    // "<c" must not match "<cols>" or "<color>". Any XML whitespace counts,
+    // not just a space: Excel and third-party writers both emit tags broken
+    // across lines.
+    const after = text[start + open.length];
+    if (after !== undefined && !/[\s>/]/.test(after)) {
       pos = start + open.length;
       continue;
     }
-    let end = -1;
-    let closer = "";
-    for (const candidate of closers) {
-      const at = text.indexOf(candidate, start + open.length);
-      if (at !== -1 && (end === -1 || at < end)) {
-        end = at;
-        closer = candidate;
-      }
+    const tagEnd = text.indexOf(">", start);
+    if (tagEnd === -1) break;                              // unterminated tag ends the scan
+    if (text[tagEnd - 1] === "/") {                        // <c r="A1"/> -- no children
+      out.push(text.slice(start, tagEnd + 1));
+      pos = tagEnd + 1;
+      continue;
     }
-    if (end === -1) break;
-    out.push(text.slice(start, end + closer.length));
-    pos = end + closer.length;
+    const end = text.indexOf(close, tagEnd + 1);
+    if (end === -1) break;                                 // unclosed: none can follow either
+    out.push(text.slice(start, end + close.length));
+    pos = end + close.length;
   }
   return out;
 }
@@ -279,9 +307,14 @@ async function _extractPptx(bytes, entries, budget) {
     .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
     .sort((a, b) => Number(a.match(/(\d+)/)[1]) - Number(b.match(/(\d+)/)[1]));
   const parts = [];
+  let produced = 0;
   for (let i = 0; i < slides.length; i++) {
     const text = _xmlToText(await _readText(bytes, entries, slides[i], budget), ["a:p"]);
-    if (text) parts.push("--- Slide " + (i + 1) + " ---\n" + text);
+    if (text) {
+      produced += text.length;                             // checked as it grows, as in _extractXlsx
+      if (produced > MAX_EXTRACTED_CHARS) throw new Error(TOO_MUCH_TEXT);
+      parts.push("--- Slide " + (i + 1) + " ---\n" + text);
+    }
   }
   if (parts.length === 0) throw new Error("no slides found -- not a PowerPoint file");
   return parts.join("\n\n");
@@ -292,7 +325,7 @@ async function _extractXlsx(bytes, entries, budget) {
   // that table has to be read before any sheet makes sense.
   const sharedXml = await _readText(bytes, entries, "xl/sharedStrings.xml", budget);
   const shared = [];
-  for (const si of _blocks(sharedXml, "<si>", ["</si>"])) {
+  for (const si of _elements(sharedXml, "si")) {
     shared.push(_decodeEntities(_stripTags(si)));
   }
 
@@ -301,22 +334,30 @@ async function _extractXlsx(bytes, entries, budget) {
   // are only a label here, so they are matched in document order and fall
   // back to "Sheet N" whenever the counts disagree.
   const workbook = await _readText(bytes, entries, "xl/workbook.xml", budget);
-  const names = [...workbook.matchAll(/<sheet[^>]*name="([^"]*)"/g)].map((m) => _decodeEntities(m[1]));
+  // Each <sheet/> tag is isolated first, then its name read from that short
+  // string. Running /<sheet[^>]*name="..."/g over the whole part was
+  // quadratic on a workbook.xml full of "<sheet" with no ">" -- measured at
+  // 2.3 seconds for a 616-byte .xlsx. A regex bounded to one tag cannot run
+  // away, however hostile the tag is.
+  const names = _elements(workbook, "sheet")
+    .map((tag) => (tag.match(/\sname="([^"]*)"/) || [])[1])
+    .map((name) => (name === undefined ? "" : _decodeEntities(name)));
 
   const sheets = [...entries.keys()]
     .filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n))
     .sort((a, b) => Number(a.match(/(\d+)/)[1]) - Number(b.match(/(\d+)/)[1]));
 
   const parts = [];
+  let produced = 0;                                        // chars emitted so far
   for (let i = 0; i < sheets.length; i++) {
     const xml = await _readText(bytes, entries, sheets[i], budget);
     const rows = [];
-    for (const row of _blocks(xml, "<row", ["</row>"])) {
+    for (const row of _elements(xml, "row")) {
       const cells = [];
       // "<c" also begins <cols> and <color>, so only a space or ">" counts.
-      for (const cell of _blocks(row, "<c", ["</c>", "/>"], " >")) {
+      for (const cell of _elements(row, "c")) {
         const type = (cell.match(/\st="([^"]*)"/) || [])[1];
-        const held = _blocks(cell, "<v>", ["</v>"]);
+        const held = _elements(cell, "v");
         const value = held.length ? _stripTags(held[0]) : undefined;
         if (type === "s") {
           // Number() on an attacker's index can be NaN or out of range; an
@@ -330,7 +371,17 @@ async function _extractXlsx(bytes, entries, budget) {
       }
       // A row of nothing but empty cells carries no information and would
       // otherwise pad a big sheet with blank lines the model has to read.
-      if (cells.some((c) => c !== "")) rows.push(cells.join("\t"));
+      if (cells.some((c) => c !== "")) {
+        const line = cells.join("\t");
+        // Checked AS IT GROWS, not once at the end. A sheet is a list of
+        // REFERENCES into the shared-string table, so a small part can point
+        // at one long string thousands of times and amplify far past what the
+        // inflate cap allows -- and the final check cannot help if the string
+        // it is meant to measure has already exhausted memory.
+        produced += line.length + 1;
+        if (produced > MAX_EXTRACTED_CHARS) throw new Error(TOO_MUCH_TEXT);
+        rows.push(line);
+      }
     }
     if (rows.length) {
       parts.push("--- " + (names[i] || "Sheet " + (i + 1)) + " ---\n" + rows.join("\n"));
@@ -371,10 +422,6 @@ async function extractOfficeText(bytes, category) {
   // same reason the .txt truncation limit was removed. It also keeps the
   // request under the Worker's 30MB body cap, which extracted text could
   // otherwise blow through AFTER the customer had agreed a price.
-  if (text.length > MAX_EXTRACTED_CHARS) {
-    throw new Error("this document holds about " +
-      Math.round(text.length / 1800) + " pages of text, too much to review in one go" +
-      " -- send the relevant section instead");
-  }
+  if (text.length > MAX_EXTRACTED_CHARS) throw new Error(TOO_MUCH_TEXT);
   return text;
 }

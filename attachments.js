@@ -98,7 +98,7 @@ async function _processOneFile(file) {
   if (category === "unknown") {
     return {
       filename: file.name, category,
-      error: "Unsupported file type. Supported: images (jpg/png/gif/webp), PDF, and plain text (.txt).",
+      error: "Unsupported file type. Supported: Word, Excel, PowerPoint, PDF, images (jpg/png/gif/webp), and text (.txt/.csv/.md/.log).",
     };
   }
   if (category === "unsupported-known") {
@@ -239,7 +239,7 @@ function describeItemAttachments(details) {
     const entry = { filename: att.name, category, bytes: bytes,
                     source: "item", attachmentId: att.id };
     if (category === "unknown") {
-      entry.error = "Unsupported file type. Supported: images (jpg/png/gif/webp), PDF, and plain text (.txt).";
+      entry.error = "Unsupported file type. Supported: Word, Excel, PowerPoint, PDF, images (jpg/png/gif/webp), and text (.txt/.csv/.md/.log).";
     } else if (category === "unsupported-known") {
       entry.error = isItem
         ? "This is an attached email, which this add-in cannot read yet."
@@ -342,6 +342,12 @@ async function resolveTextAttachments(item, entries) {
     if (entry.error || entry.source !== "item") continue;
     if (!TEXT_PRODUCING.has(entry.category)) continue;
     await fetchItemAttachment(item, entry);
+    // A document that yielded no text cannot be priced from its size -- see
+    // the fallback note in estimateCoins -- so it is refused here rather than
+    // quoted at zero and then charged for whatever the Worker makes of it.
+    if (!entry.error && entry.category !== "txt" && entry.extractedText === undefined) {
+      entry.error = "No readable text could be extracted from this document.";
+    }
   }
   return entries;
 }
@@ -383,13 +389,20 @@ function estimateCoins(attachments) {
       // actually be sent, marker prefix and filename included. Counting the
       // bare text would quote low by the length of that prefix.
       const prefix = ATTACHED_TEXT_MARKER + att.filename + "]\n";
-      // extractedText is normally present by now: resolveTextAttachments
-      // fetches and extracts these when the pane opens, precisely so the
-      // quote is exact. The byte fallback is a guard for the case where that
-      // has not run -- bytes >= characters, so it can only quote HIGH.
+      // extractedText is normally present: resolveTextAttachments reads these
+      // when the pane opens precisely so the quote is exact, and anything it
+      // could not read carries an error and was skipped above.
+      //
+      // The byte fallback is for PLAIN TEXT ONLY. A UTF-8 .txt is at least as
+      // many bytes as characters, so bytes can only quote HIGH. That does NOT
+      // hold for the Office formats: they are ZIP archives, so a small file
+      // can hold far more text than its size suggests and bytes would quote
+      // LOW -- the one direction that is not allowed. An Office file with no
+      // text extracted is refused by resolveTextAttachments instead.
+      const fallback = att.category === "txt" ? (att.bytes || 0) : 0;
       textChars += prefix.length + (att.extractedText !== undefined
         ? att.extractedText.length
-        : (att.bytes || 0));
+        : fallback);
     }
   }
   const coins =

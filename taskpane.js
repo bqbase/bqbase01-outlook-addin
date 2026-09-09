@@ -16,14 +16,19 @@ let lastDraft = null; // last successful draft, enables INSERT
 let busy = false;
 let pendingAttachments = []; // Attachment[] from attachments.js
 let boundEmail = ""; // mailbox the service says this token belongs to
+// What the Worker said it charged for the LAST turn, from its response
+// header. Read after a failure to tell the customer whether retrying is
+// free -- the pane cannot infer that, because the Worker meters a teed copy
+// of the response and charges for an answer the pane may have failed to read.
+let lastCharged = 0;
 
 Office.onReady(async (info) => {
   if (info.host !== Office.HostType.Outlook) return;
   currentItem = Office.context.mailbox.item;
 
   // Must happen before ANY call to the service, including the token check on
-  // the settings screen: the subscription is tied to this mailbox, and a call
-  // that omits the address cannot bind a fresh token to it.
+  // the settings screen: the subscription is registered to one mailbox, and a
+  // call that omits the address cannot be checked against it.
   setMailbox(_mailboxAddress());
 
   document.getElementById("screen-loading").classList.add("hidden");
@@ -188,6 +193,12 @@ async function onSaveToken() {
 
   showChatScreen();
   renderCoinBar(result.balance);
+  // The same startup work Office.onReady does. Without this a customer who
+  // has just pasted their token gets a chat screen with NO attachment row --
+  // the priced review path is simply absent on first run, and only appears
+  // if they happen to close and reopen the pane. Every new customer meets
+  // that path first.
+  await loadItemAttachments();
   maybeAutoSuggestReplyOptions();
 }
 
@@ -262,7 +273,10 @@ function appendTurn(text, cssClass) {
 function setBusy(isBusy) {
   busy = isBusy;
   document.getElementById("input-box").disabled = isBusy;
-  document.getElementById("reviewAttachBtn").disabled = isBusy;
+  // NOT a plain assignment: the Review button is also disabled while Office
+  // documents are being read for pricing, and clearing busy must not
+  // re-enable it mid-extraction with a price that is not final yet.
+  document.getElementById("reviewAttachBtn").disabled = isBusy || attachEstimatePending;
 }
 
 // -- attachments -------------------------------------------------------
@@ -290,8 +304,17 @@ function _wireDropTarget(el) {
 async function addFiles(fileList) {
   if (busy) return; // busy guard on attach -- deliberately a silent no-op
   const room = MAX_ATTACHMENTS_PER_MESSAGE - pendingAttachments.length;
-  if (room <= 0) return;
-  const processed = await processFiles(Array.from(fileList).slice(0, room));
+  const offered = Array.from(fileList);
+  if (room <= 0) {
+    appendTurn("[system] Already holding " + MAX_ATTACHMENTS_PER_MESSAGE +
+      " files -- remove one before adding another.", "system");
+    return;
+  }
+  if (offered.length > room) {
+    appendTurn("[system] Only " + room + " of those " + offered.length +
+      " files were added; " + MAX_ATTACHMENTS_PER_MESSAGE + " is the limit.", "system");
+  }
+  const processed = await processFiles(offered.slice(0, room));
   pendingAttachments = pendingAttachments.concat(processed);
   renderAttachmentChips();
 }
@@ -474,13 +497,27 @@ async function onReviewAttachments() {
     text || REVIEW_THEN_OPTIONS_PROMPT,
     !wantsOptions, ready, "attachment"
   );
-  // A failed turn costs no coins, so the files go back in the row rather than
-  // making the customer find the email again to retry. Their content is
-  // already fetched, so the retry is free and instant.
   if (!ok) {
+    // The files go back in the row rather than making the customer find the
+    // email again -- but WHETHER A RETRY IS FREE depends on something the
+    // pane cannot assume. The Worker meters a teed copy of the response, so
+    // a turn the model answered is charged even if the pane's own read of
+    // the stream then failed. lastCharged is the Worker's own figure, sent
+    // on a header that arrives with the response head, before any stream
+    // error. Saying "try again" unconditionally invited a second charge for
+    // a review already paid for.
     pendingAttachments = ready.concat(pendingAttachments);
     renderAttachmentChips();
-    appendTurn("[system] The attachments are still listed -- press Review to try again.", "system");
+    appendTurn(lastCharged > 0
+      ? "[system] That review was already charged (" + lastCharged +
+        (lastCharged === 1 ? " coin" : " coins") +
+        ") even though the answer did not arrive. Pressing Review again will charge again."
+      : "[system] Nothing was charged. The attachments are still listed -- press Review to try again.",
+      lastCharged > 0 ? "error" : "system");
+    // The header reports the charge BEFORE the Worker's meter decides
+    // whether to refund it, so the counter is re-read from the service
+    // rather than trusted.
+    await refreshCoinBar();
   }
 }
 
@@ -500,6 +537,11 @@ const REVIEW_THEN_OPTIONS_PROMPT =
 // file's own addFiles/attachments.js) are a separate, supported feature.
 async function maybeAutoSuggestReplyOptions() {
   if (!isReplyOrForward(currentItem)) return;
+  // Guarded like every other entry point. Saving a token calls this while
+  // the pane's own startup may already have a turn in flight, and two
+  // concurrent dispatchTurn calls interleave their pushes into `history`
+  // and fight over setBusy.
+  if (busy) return;
   appendTurn("[system] Reviewing the email -- suggesting reply options...", "system");
   await dispatchTurn(
     "Before drafting anything, suggest 2-3 different brief angles or " +
@@ -596,6 +638,7 @@ async function dispatchTurn(text, isDraftCandidate, attachments, purpose) {
   setBusy(false);
   // Updated even when the turn FAILED: a refusal may itself be the reason
   // (a suspended account), and a stale counter is worse than none.
+  lastCharged = (result.coins && result.coins.charged) || 0;
   updateCoinBarFromTurn(result.coins);
 
   if (result.ok) {
